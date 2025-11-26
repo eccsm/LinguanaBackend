@@ -1,8 +1,3 @@
-/**
- * STT Endpoint (Speech-to-Text using OpenAI Whisper)
- * Serverless function for Vercel
- */
-
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
@@ -10,14 +5,17 @@ const path = require('path');
 const { parseMultipartForm } = require('../utils/parseMultipart');
 
 module.exports = async (req, res) => {
-    // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-client-secret');
 
-    // Handle OPTIONS request for CORS preflight
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
+    }
+
+    const clientSecret = req.headers['x-client-secret'];
+    if (clientSecret !== process.env.APP_CLIENT_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
     }
 
     if (req.method !== 'POST') {
@@ -27,9 +25,7 @@ module.exports = async (req, res) => {
     let audioFilePath = null;
 
     try {
-        // Parse multipart form data
         const { fields, files } = await parseMultipartForm(req);
-
         const language = fields.language || 'en';
         const audioFile = files.audio;
 
@@ -37,12 +33,6 @@ module.exports = async (req, res) => {
             return res.status(400).json({ error: 'No audio file provided' });
         }
 
-        console.log('📝 Transcription request:', {
-            filename: audioFile.filename,
-            language: language
-        });
-
-        // Read the file from /tmp directory
         audioFilePath = audioFile.filepath;
 
         const formData = new FormData();
@@ -65,21 +55,16 @@ module.exports = async (req, res) => {
             }
         );
 
-        // Clean up
         if (audioFilePath && fs.existsSync(audioFilePath)) {
             fs.unlinkSync(audioFilePath);
         }
 
-        console.log('✅ Transcription successful:', response.data.text);
         res.status(200).json({
             text: response.data.text,
             language: response.data.language
         });
 
     } catch (error) {
-        console.error('❌ Transcription error:', error.message);
-
-        // Clean up on error
         if (audioFilePath && fs.existsSync(audioFilePath)) {
             fs.unlinkSync(audioFilePath);
         }
