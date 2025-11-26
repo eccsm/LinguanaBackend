@@ -16,6 +16,10 @@
         {
             "src": "/speak",
             "dest": "/api/speak"
+        },
+        {
+            "src": "/chat",
+            "dest": "/api/chat"
         }
     ]
 }
