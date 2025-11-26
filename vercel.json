@@ -1,0 +1,26 @@
+{
+    "version": 2,
+    "builds": [
+        {
+            "src": "api/**/*.js",
+            "use": "@vercel/node"
+        }
+    ],
+    "routes": [
+        {
+            "src": "/health",
+            "dest": "/api/health"
+        },
+        {
+            "src": "/transcribe",
+            "dest": "/api/transcribe"
+        },
+        {
+            "src": "/speak",
+            "dest": "/api/speak"
+        }
+    ],
+    "env": {
+        "OPENAI_API_KEY": "@openai_api_key"
+    }
+}
