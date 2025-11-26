@@ -19,8 +19,5 @@
             "src": "/speak",
             "dest": "/api/speak"
         }
-    ],
-    "env": {
-        "OPENAI_API_KEY": "@openai_api_key"
-    }
+    ]
 }
