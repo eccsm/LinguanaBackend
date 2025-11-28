@@ -32,6 +32,10 @@
         {
             "src": "/review",
             "dest": "/api/review"
+        },
+        {
+            "src": "/extract-vocabulary",
+            "dest": "/api/extract-vocabulary"
         }
     ]
 }

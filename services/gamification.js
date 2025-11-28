@@ -141,7 +141,7 @@ const processReviewBatch = async (userId, reviews) => {
         interval: srsUpdate.interval,
         repetitions: srsUpdate.repetitions,
         easeFactor: srsUpdate.easeFactor,
-        nextReviewDate: admin.firestore.Timestamp.fromDate(srsUpdate.nextReviewDate),
+        nextReview: admin.firestore.Timestamp.fromDate(srsUpdate.nextReviewDate), // Changed from nextReviewDate to nextReview
         lastReviewed: admin.firestore.FieldValue.serverTimestamp(),
         totalReviews: admin.firestore.FieldValue.increment(1)
       });
@@ -150,7 +150,16 @@ const processReviewBatch = async (userId, reviews) => {
     await batch.commit();
     console.log(`✅ Processed ${reviews.length} reviews for user ${userId}`);
     
-    return { success: true, reviewsProcessed: reviews.length };
+    // Award XP for completing reviews (10 XP per card)
+    const xpEarned = reviews.length * 10;
+    const userRef = db.collection('users').doc(userId);
+    await userRef.update({
+      xp: admin.firestore.FieldValue.increment(xpEarned),
+      totalReviews: admin.firestore.FieldValue.increment(reviews.length)
+    });
+    console.log(`✅ Awarded ${xpEarned} XP for ${reviews.length} reviews`);
+    
+    return { success: true, reviewsProcessed: reviews.length, xpEarned };
   } catch (error) {
     console.error('❌ Error processing review batch:', error.message);
     throw error;
