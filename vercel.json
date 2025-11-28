@@ -20,6 +20,18 @@
         {
             "src": "/chat",
             "dest": "/api/chat"
+        },
+        {
+            "src": "/user-activity",
+            "dest": "/api/user-activity"
+        },
+        {
+            "src": "/lesson-complete",
+            "dest": "/api/lesson-complete"
+        },
+        {
+            "src": "/review",
+            "dest": "/api/review"
         }
     ]
 }
