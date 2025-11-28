@@ -105,24 +105,29 @@ const updateStreak = async (userId) => {
  * API Endpoint logic to handle a batch of reviewed cards.
  */
 const processReviewBatch = async (userId, reviews) => {
-  // reviews = [{ wordId: "hola", quality: 4, prevData: {...} }, ...]
-  // prevData can be passed from frontend or we fetch it here
+  console.log('[VOCAB_BACKEND] 📥 Processing review batch:', {
+    userId,
+    reviewCount: reviews.length,
+    reviews: reviews.map(r => ({ wordId: r.wordId, quality: r.quality }))
+  });
   
   try {
     // Fetch all card documents first
+    console.log('[VOCAB_BACKEND] 🔍 Fetching card data from Firestore...');
     const cardPromises = reviews.map(review => {
       const cardRef = db.collection('users').doc(userId).collection('vocabDeck').doc(review.wordId);
       return cardRef.get().then(doc => ({ review, doc, cardRef }));
     });
     
     const cardData = await Promise.all(cardPromises);
+    console.log('[VOCAB_BACKEND] ✅ Card data fetched:', cardData.length, 'cards');
     
     // Process updates in a batch
     const batch = db.batch();
     
-    cardData.forEach(({ review, doc, cardRef }) => {
+    cardData.forEach(({ review, doc, cardRef }, index) => {
       if (!doc.exists) {
-        console.warn(`Card ${review.wordId} not found for user ${userId}`);
+        console.warn(`[VOCAB_BACKEND] ⚠️ Card ${review.wordId} not found for user ${userId}`);
         return;
       }
       
@@ -133,8 +138,24 @@ const processReviewBatch = async (userId, reviews) => {
         easeFactor: currentData.easeFactor || 2.5
       };
       
+      console.log(`[VOCAB_BACKEND] 📊 Card ${index + 1}/${cardData.length}:`, {
+        wordId: review.wordId,
+        front: currentData.front,
+        quality: review.quality,
+        prevInterval: prevData.interval,
+        prevReps: prevData.repetitions,
+        prevEase: prevData.easeFactor
+      });
+      
       // Calculate next review using SRS algorithm
       const srsUpdate = calculateNextReview(review.quality, prevData);
+      
+      console.log(`[VOCAB_BACKEND] 🔄 SRS calculation result:`, {
+        newInterval: srsUpdate.interval,
+        newReps: srsUpdate.repetitions,
+        newEase: srsUpdate.easeFactor,
+        nextReviewDate: srsUpdate.nextReviewDate.toISOString()
+      });
       
       // Update the card with new SRS data
       batch.update(cardRef, {
@@ -147,21 +168,33 @@ const processReviewBatch = async (userId, reviews) => {
       });
     });
     
+    console.log('[VOCAB_BACKEND] 💾 Committing batch update to Firestore...');
     await batch.commit();
-    console.log(`✅ Processed ${reviews.length} reviews for user ${userId}`);
+    console.log(`[VOCAB_BACKEND] ✅ Batch committed: ${reviews.length} cards updated`);
     
     // Award XP for completing reviews (10 XP per card)
     const xpEarned = reviews.length * 10;
+    console.log(`[VOCAB_BACKEND] 🏆 Awarding XP:`, {
+      userId,
+      xpEarned,
+      reviewsProcessed: reviews.length
+    });
+    
     const userRef = db.collection('users').doc(userId);
     await userRef.update({
       xp: admin.firestore.FieldValue.increment(xpEarned),
       totalReviews: admin.firestore.FieldValue.increment(reviews.length)
     });
-    console.log(`✅ Awarded ${xpEarned} XP for ${reviews.length} reviews`);
+    console.log(`[VOCAB_BACKEND] ✅ User stats updated: +${xpEarned} XP, +${reviews.length} total reviews`);
     
     return { success: true, reviewsProcessed: reviews.length, xpEarned };
   } catch (error) {
-    console.error('❌ Error processing review batch:', error.message);
+    console.error('[VOCAB_BACKEND] ❌ Error processing review batch:', {
+      error: error.message,
+      stack: error.stack,
+      userId,
+      reviewCount: reviews.length
+    });
     throw error;
   }
 };

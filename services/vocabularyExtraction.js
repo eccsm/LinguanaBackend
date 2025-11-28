@@ -21,7 +21,13 @@ const extractVocabularyFromConversation = async (
   nativeLanguage = 'en'
 ) => {
   try {
-    console.log(`📚 Extracting vocabulary for user ${userId} from conversation ${conversationId}`);
+    console.log('[VOCAB_EXTRACT] 📚 Starting extraction:', {
+      userId,
+      conversationId,
+      totalMessages: messages.length,
+      targetLanguage,
+      nativeLanguage
+    });
     
     // Extract target language messages (AI responses)
     const targetMessages = messages
@@ -29,15 +35,24 @@ const extractVocabularyFromConversation = async (
       .map(msg => msg.content)
       .join(' ');
 
+    console.log('[VOCAB_EXTRACT] 📤 AI messages extracted:', {
+      messageCount: messages.filter(msg => msg.role === 'assistant').length,
+      textLength: targetMessages.length,
+      preview: targetMessages.substring(0, 100) + '...'
+    });
+
     // Extract vocabulary using OpenAI (production-ready)
     const vocabulary = await extractKeyPhrases(targetMessages, targetLanguage);
+    console.log('[VOCAB_EXTRACT] 🔍 Keywords found:', vocabulary);
     
     // Get translations for each word/phrase
     const vocabWithTranslations = await getTranslations(vocabulary, targetLanguage, nativeLanguage);
+    console.log('[VOCAB_EXTRACT] 🌍 Translations prepared:', vocabWithTranslations.length, 'words');
     
     // Add to user's vocab deck
     let wordsAdded = 0;
     const batch = db.batch();
+    console.log('[VOCAB_EXTRACT] 🔍 Checking for existing cards...');
     
     for (const item of vocabWithTranslations) {
       // Check if word already exists
@@ -50,6 +65,7 @@ const extractVocabularyFromConversation = async (
         .get();
       
       if (existing.empty) {
+        console.log('[VOCAB_EXTRACT] ➕ Adding new word:', item.front, '=', item.back);
         // Add new word
         const newCardRef = db
           .collection('users')
@@ -73,15 +89,24 @@ const extractVocabularyFromConversation = async (
         });
         
         wordsAdded++;
+      } else {
+        console.log('[VOCAB_EXTRACT] ⏭️ Skipping existing word:', item.front);
       }
     }
     
     if (wordsAdded > 0) {
+      console.log('[VOCAB_EXTRACT] 💾 Committing batch:', wordsAdded, 'new cards');
       await batch.commit();
-      console.log(`✅ Added ${wordsAdded} new words to vocab deck`);
+      console.log(`[VOCAB_EXTRACT] ✅ Successfully added ${wordsAdded} new words to vocab deck`);
     } else {
-      console.log(`ℹ️ No new words to add (all already exist)`);
+      console.log(`[VOCAB_EXTRACT] ℹ️ No new words to add (all already exist)`);
     }
+    
+    console.log('[VOCAB_EXTRACT] 🎉 Extraction complete:', {
+      wordsAdded,
+      totalWordsFound: vocabWithTranslations.length,
+      conversationId
+    });
     
     return {
       success: true,
@@ -90,7 +115,12 @@ const extractVocabularyFromConversation = async (
     };
     
   } catch (error) {
-    console.error('❌ Error extracting vocabulary:', error.message);
+    console.error('[VOCAB_EXTRACT] ❌ Error extracting vocabulary:', {
+      error: error.message,
+      stack: error.stack,
+      userId,
+      conversationId
+    });
     throw error;
   }
 };
