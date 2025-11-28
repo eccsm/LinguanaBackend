@@ -1,5 +1,5 @@
 {
-  "name": "linguana-stt-backend",
+  "name": "linguana-backend",
   "version": "2.0.0",
   "description": "Vercel-compatible STT & TTS backend service for Linguana using OpenAI",
   "main": "api/health.js",
