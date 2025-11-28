@@ -23,9 +23,11 @@ backend/
 │   ├── chat.js          # Chat completion endpoint
 │   ├── lesson-complete.js # Lesson completion & streak tracking
 │   ├── review.js        # Vocabulary review & SRS processing
-│   └── user-activity.js # User login/activity tracking
+│   ├── user-activity.js # User login/activity tracking
+│   └── extract-vocabulary.js # AI-powered vocabulary extraction
 ├── services/
-│   └── gamification.js  # SRS algorithm & streak logic
+│   ├── gamification.js  # SRS algorithm & streak logic
+│   └── vocabularyExtraction.js # OpenAI vocabulary extraction
 ├── utils/
 │   ├── parseMultipart.js  # File upload parser for serverless
 │   ├── firebaseInit.js    # Firebase Admin SDK initialization
@@ -263,6 +265,47 @@ Response:
 }
 
 Note: Uses SuperMemo-2 SRS algorithm to calculate next review dates
+```
+
+### Vocabulary Extraction (AI-Powered)
+```
+POST https://your-project.vercel.app/extract-vocabulary
+
+Headers:
+- Authorization: Bearer <firebase_id_token>
+- x-client-secret: <your_client_secret> (optional)
+
+Content-Type: application/json
+
+Body:
+{
+  "userId": "user123", // Optional if using Firebase token
+  "conversationId": "conv_12345",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hola, ¿cómo estás?"
+    },
+    {
+      "role": "assistant",
+      "content": "Estoy bien, gracias. ¿Y tú?"
+    }
+  ],
+  "targetLanguage": "es",
+  "nativeLanguage": "en"
+}
+
+Response:
+{
+  "success": true,
+  "message": "Vocabulary extracted and added successfully",
+  "userId": "user123",
+  "conversationId": "conv_12345",
+  "wordsAdded": 3,
+  "totalWords": 5
+}
+
+Note: Uses OpenAI GPT-3.5 to intelligently extract key vocabulary from conversations and create flashcards with translations and example sentences. Automatically detects duplicate words.
 ```
 
 ## 🔐 Setting Environment Variables in Vercel

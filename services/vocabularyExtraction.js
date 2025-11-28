@@ -29,9 +29,8 @@ const extractVocabularyFromConversation = async (
       .map(msg => msg.content)
       .join(' ');
 
-    // Simple keyword extraction (in production, use OpenAI or NLP)
-    // For now, extract common words/phrases
-    const vocabulary = extractKeyPhrases(targetMessages, targetLanguage);
+    // Extract vocabulary using OpenAI (production-ready)
+    const vocabulary = await extractKeyPhrases(targetMessages, targetLanguage);
     
     // Get translations for each word/phrase
     const vocabWithTranslations = await getTranslations(vocabulary, targetLanguage, nativeLanguage);
@@ -97,63 +96,153 @@ const extractVocabularyFromConversation = async (
 };
 
 /**
- * Extract key phrases from text (simplified version)
- * In production, use OpenAI or proper NLP library
+ * Extract key phrases from text using OpenAI (Production)
+ * Uses GPT to intelligently extract relevant vocabulary
  */
-const extractKeyPhrases = (text, targetLanguage) => {
-  // Simple extraction based on common words
-  // This is a placeholder - in production, use OpenAI API
-  
-  const commonSpanishWords = {
-    'hola': { translation: 'hello', context: 'Hola, ¿cómo estás?' },
-    'gracias': { translation: 'thank you', context: 'Gracias por tu ayuda.' },
-    'adiós': { translation: 'goodbye', context: 'Adiós, hasta luego.' },
-    'por favor': { translation: 'please', context: '¿Puedes ayudarme, por favor?' },
-    'buenos días': { translation: 'good morning', context: 'Buenos días, ¿cómo estás?' },
-    'buenas tardes': { translation: 'good afternoon', context: 'Buenas tardes.' },
-    'buenas noches': { translation: 'good night', context: 'Buenas noches, que duermas bien.' },
-    'perdón': { translation: 'sorry/excuse me', context: 'Perdón, no entendí.' },
-    'sí': { translation: 'yes', context: 'Sí, estoy de acuerdo.' },
-    'no': { translation: 'no', context: 'No, no quiero.' }
-  };
-  
-  const found = [];
-  const lowerText = text.toLowerCase();
-  
-  // Check for each common word/phrase
-  for (const [phrase, data] of Object.entries(commonSpanishWords)) {
-    if (lowerText.includes(phrase) && !found.includes(phrase)) {
-      found.push(phrase);
-    }
+const extractKeyPhrases = async (text, targetLanguage) => {
+  try {
+    const axios = require('axios');
+    
+    const languageNames = {
+      'es': 'Spanish',
+      'fr': 'French',
+      'de': 'German',
+      'it': 'Italian',
+      'pt': 'Portuguese',
+      'ja': 'Japanese',
+      'ko': 'Korean',
+      'zh': 'Chinese'
+    };
+    
+    const langName = languageNames[targetLanguage] || targetLanguage;
+    
+    const response = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a language learning assistant. Extract 5-10 key vocabulary words or phrases from the following ${langName} text that would be useful for a language learner. Focus on commonly used words, useful phrases, and important expressions. Return ONLY a JSON array of strings, nothing else. Example: ["hola", "buenos días", "gracias"]`
+          },
+          {
+            role: 'user',
+            content: text
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 200
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    const content = response.data.choices[0].message.content.trim();
+    const vocabulary = JSON.parse(content);
+    
+    console.log(`🔍 Extracted ${vocabulary.length} vocabulary items using OpenAI`);
+    return vocabulary;
+    
+  } catch (error) {
+    console.error('❌ OpenAI extraction error:', error.message);
+    // Fallback to simple extraction if OpenAI fails
+    console.log('⚠️ Falling back to simple extraction');
+    return extractKeyPhrasesFallback(text);
   }
-  
-  return found.slice(0, 5); // Limit to 5 words per conversation
 };
 
 /**
- * Get translations for words/phrases
- * In production, use OpenAI translation API
+ * Fallback extraction method (used if OpenAI fails)
+ */
+const extractKeyPhrasesFallback = (text) => {
+  // Simple word splitting as fallback
+  const words = text.toLowerCase().match(/\b\w+\b/g) || [];
+  const uniqueWords = [...new Set(words)];
+  return uniqueWords.slice(0, 5);
+};
+
+/**
+ * Get translations and example sentences using OpenAI (Production)
+ * Creates flashcard data with translations and contextual examples
  */
 const getTranslations = async (words, targetLanguage, nativeLanguage) => {
-  // Simple translation mapping (placeholder)
-  const translations = {
-    'hola': { back: 'hello', context: 'Hola, ¿cómo estás?' },
-    'gracias': { back: 'thank you', context: 'Gracias por tu ayuda.' },
-    'adiós': { back: 'goodbye', context: 'Adiós, hasta luego.' },
-    'por favor': { back: 'please', context: '¿Puedes ayudarme, por favor?' },
-    'buenos días': { back: 'good morning', context: 'Buenos días, ¿cómo estás?' },
-    'buenas tardes': { back: 'good afternoon', context: 'Buenas tardes.' },
-    'buenas noches': { back: 'good night', context: 'Buenas noches.' },
-    'perdón': { back: 'sorry', context: 'Perdón, no entendí.' },
-    'sí': { back: 'yes', context: 'Sí, estoy de acuerdo.' },
-    'no': { back: 'no', context: 'No, no quiero.' }
-  };
-  
-  return words.map(word => ({
-    front: word,
-    back: translations[word]?.back || 'translation',
-    context: translations[word]?.context || `Example: ${word}`
-  }));
+  try {
+    const axios = require('axios');
+    
+    const languageNames = {
+      'es': 'Spanish',
+      'fr': 'French',
+      'de': 'German',
+      'it': 'Italian',
+      'pt': 'Portuguese',
+      'ja': 'Japanese',
+      'ko': 'Korean',
+      'zh': 'Chinese',
+      'en': 'English'
+    };
+    
+    const targetLangName = languageNames[targetLanguage] || targetLanguage;
+    const nativeLangName = languageNames[nativeLanguage] || nativeLanguage;
+    
+    const response = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a language learning assistant. For each ${targetLangName} word or phrase provided, create a flashcard with:
+1. The original word/phrase (front)
+2. The ${nativeLangName} translation (back)
+3. An example sentence in ${targetLangName} using that word (context)
+
+Return ONLY a JSON array of objects with this exact format:
+[
+  {
+    "front": "original word",
+    "back": "translation",
+    "context": "Example sentence in ${targetLangName}"
+  }
+]
+
+Do not include any other text or explanation.`
+          },
+          {
+            role: 'user',
+            content: JSON.stringify(words)
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 500
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    const content = response.data.choices[0].message.content.trim();
+    const translations = JSON.parse(content);
+    
+    console.log(`🌐 Translated ${translations.length} vocabulary items using OpenAI`);
+    return translations;
+    
+  } catch (error) {
+    console.error('❌ OpenAI translation error:', error.message);
+    // Fallback to simple translation
+    console.log('⚠️ Falling back to simple translation');
+    return words.map(word => ({
+      front: word,
+      back: `Translation of ${word}`,
+      context: `Example: ${word} in a sentence.`
+    }));
+  }
 };
 
 module.exports = {
