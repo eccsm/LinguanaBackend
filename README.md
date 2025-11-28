@@ -6,6 +6,8 @@ This backend has been converted to be **fully Vercel-compatible** using serverle
 
 - **STT (Speech-to-Text)** using OpenAI Whisper API
 - **TTS (Text-to-Speech)** using OpenAI TTS API
+- **Gamification System** with streak tracking and spaced repetition (SRS)
+- **Firebase Integration** for user authentication and data storage
 - **Serverless Architecture** - Scales automatically
 - **CORS Enabled** - Works with React Native apps
 - **Environment Variables** - Secure API key management
@@ -17,9 +19,17 @@ backend/
 ├── api/
 │   ├── health.js        # Health check endpoint
 │   ├── transcribe.js    # STT endpoint (POST /transcribe)
-│   └── speak.js         # TTS endpoint (POST /speak)
+│   ├── speak.js         # TTS endpoint (POST /speak)
+│   ├── chat.js          # Chat completion endpoint
+│   ├── lesson-complete.js # Lesson completion & streak tracking
+│   ├── review.js        # Vocabulary review & SRS processing
+│   └── user-activity.js # User login/activity tracking
+├── services/
+│   └── gamification.js  # SRS algorithm & streak logic
 ├── utils/
-│   └── parseMultipart.js # File upload parser for serverless
+│   ├── parseMultipart.js  # File upload parser for serverless
+│   ├── firebaseInit.js    # Firebase Admin SDK initialization
+│   └── authMiddleware.js  # Authentication & user ID extraction
 ├── server.js            # Legacy Express server (kept for local dev)
 ├── vercel.json          # Vercel configuration
 └── package.json         # Updated dependencies
@@ -39,10 +49,54 @@ npm install
 Create a `.env` file in the `backend` directory:
 
 ```env
+# OpenAI API
 OPENAI_API_KEY=your_openai_api_key_here
+
+# App Security (optional)
+APP_CLIENT_SECRET=your_secret_here
+
+# Firebase Admin SDK (for gamification features)
+# Option A: Use service account JSON (base64 encoded)
+FIREBASE_SERVICE_ACCOUNT=base64_encoded_service_account_json
+
+# Option B: Use individual credentials
+FIREBASE_PROJECT_ID=your_project_id
+FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-project.iam.gserviceaccount.com
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nYour private key here\n-----END PRIVATE KEY-----\n"
+FIREBASE_DATABASE_URL=https://your-project.firebaseio.com
 ```
 
-### 3. Local Development
+### 3. Firebase Setup (Required for Gamification Features)
+
+#### If you already have a Firebase project:
+1. Go to [Firebase Console](https://console.firebase.google.com/)
+2. Select your project
+3. Go to **Project Settings** → **Service Accounts**
+4. Click **Generate New Private Key** and download the JSON file
+
+#### If you need to create a new Firebase project:
+1. Go to [Firebase Console](https://console.firebase.google.com/)
+2. Click **Add Project** and follow the wizard
+3. Enable **Firestore Database** (for user data, streaks, vocab cards)
+4. Enable **Authentication** (for Firebase ID tokens)
+5. Go to **Project Settings** → **Service Accounts**
+6. Click **Generate New Private Key** and download the JSON file
+
+#### Convert service account to base64 (for Vercel):
+
+**Windows PowerShell:**
+```powershell
+[Convert]::ToBase64String([System.IO.File]::ReadAllBytes("path\to\serviceAccountKey.json"))
+```
+
+**Mac/Linux:**
+```bash
+base64 -i path/to/serviceAccountKey.json
+```
+
+Then add the base64 string to your `.env` file as `FIREBASE_SERVICE_ACCOUNT`
+
+### 4. Local Development
 
 For local testing with Vercel CLI:
 
@@ -124,18 +178,133 @@ Response:
 }
 ```
 
+### User Activity / Login
+```
+POST https://your-project.vercel.app/user-activity
+
+Headers:
+- Authorization: Bearer <firebase_id_token>
+- x-client-secret: <your_client_secret> (optional)
+
+Content-Type: application/json
+
+Body:
+{
+  "userId": "user123" // Optional if using Firebase token
+}
+
+Response:
+{
+  "success": true,
+  "message": "User activity tracked",
+  "userId": "user123",
+  "timestamp": "2025-11-28T14:33:05.000Z"
+}
+
+Note: This endpoint updates user streaks asynchronously
+```
+
+### Lesson Completion
+```
+POST https://your-project.vercel.app/lesson-complete
+
+Headers:
+- Authorization: Bearer <firebase_id_token>
+- x-client-secret: <your_client_secret> (optional)
+
+Content-Type: application/json
+
+Body:
+{
+  "userId": "user123" // Optional if using Firebase token
+}
+
+Response:
+{
+  "success": true,
+  "message": "Lesson completed successfully",
+  "userId": "user123"
+}
+
+Note: This endpoint triggers streak tracking asynchronously
+```
+
+### Vocabulary Review (Spaced Repetition)
+```
+POST https://your-project.vercel.app/review
+
+Headers:
+- Authorization: Bearer <firebase_id_token>
+- x-client-secret: <your_client_secret> (optional)
+
+Content-Type: application/json
+
+Body:
+{
+  "userId": "user123", // Optional if using Firebase token
+  "reviews": [
+    {
+      "wordId": "hola",
+      "quality": 4  // 0-5 rating (0=forgot, 5=perfect)
+    },
+    {
+      "wordId": "adios",
+      "quality": 3
+    }
+  ]
+}
+
+Response:
+{
+  "success": true,
+  "message": "Reviews processed successfully",
+  "userId": "user123",
+  "reviewsProcessed": 2
+}
+
+Note: Uses SuperMemo-2 SRS algorithm to calculate next review dates
+```
+
 ## 🔐 Setting Environment Variables in Vercel
+
+### Required Environment Variables:
+- `OPENAI_API_KEY` - Your OpenAI API key
+- `FIREBASE_SERVICE_ACCOUNT` - Base64 encoded Firebase service account JSON (recommended)
+  
+  **OR** individual Firebase credentials:
+  - `FIREBASE_PROJECT_ID`
+  - `FIREBASE_CLIENT_EMAIL`
+  - `FIREBASE_PRIVATE_KEY`
+  - `FIREBASE_DATABASE_URL`
+- `APP_CLIENT_SECRET` - Optional secret for additional security
 
 ### Via CLI:
 ```bash
+# Add OpenAI API Key
 vercel env add OPENAI_API_KEY production
+
+# Add Firebase credentials (Option A - Recommended)
+vercel env add FIREBASE_SERVICE_ACCOUNT production
+# Paste your base64 encoded service account JSON
+
+# Or Option B - Individual credentials
+vercel env add FIREBASE_PROJECT_ID production
+vercel env add FIREBASE_CLIENT_EMAIL production
+vercel env add FIREBASE_PRIVATE_KEY production
+vercel env add FIREBASE_DATABASE_URL production
+
+# Optional: Add client secret
+vercel env add APP_CLIENT_SECRET production
 ```
 
 ### Via Dashboard:
 1. Go to your project on Vercel
 2. Click "Settings" → "Environment Variables"
-3. Add `OPENAI_API_KEY` with your OpenAI API key
-4. Select "Production", "Preview", and "Development"
+3. Add each environment variable:
+   - `OPENAI_API_KEY` with your OpenAI API key
+   - `FIREBASE_SERVICE_ACCOUNT` with your base64 encoded service account
+   - `APP_CLIENT_SECRET` with your custom secret (optional)
+4. Select "Production", "Preview", and "Development" for each
 5. Click "Save"
 
 ## ⚡ Key Changes from Express
