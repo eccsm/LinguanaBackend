@@ -40,10 +40,6 @@
         {
             "src": "/grant-rewards",
             "dest": "/api/grant-rewards"
-        },
-        {
-            "src": "/check-session-rewarded",
-            "dest": "/api/check-session-rewarded"
         }
     ]
 }
