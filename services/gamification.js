@@ -199,8 +199,123 @@ const processReviewBatch = async (userId, reviews) => {
   }
 };
 
+/**
+ * 4. GRANT SESSION REWARDS
+ * Awards XP and Gems based on session type
+ * Prevents duplicate rewards for the same session
+ */
+const grantSessionRewards = async (userId, type, sessionId) => {
+  console.log('[REWARDS] 🎁 Granting session rewards:', {
+    userId,
+    type,
+    sessionId
+  });
+
+  try {
+    // Validate sessionId is provided
+    if (!sessionId) {
+      console.warn('[REWARDS] ⚠️ No sessionId provided - required to prevent duplicates');
+      return {
+        success: false,
+        error: 'Session ID is required'
+      };
+    }
+
+    const userRef = db.collection('users').doc(userId);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) {
+      console.warn('[REWARDS] ⚠️ User document not found:', userId);
+      return {
+        success: false,
+        error: 'User not found'
+      };
+    }
+
+    const userData = userDoc.data();
+    const rewardedSessions = userData.rewardedSessions || [];
+
+    // Check if this session was already rewarded
+    if (rewardedSessions.includes(sessionId)) {
+      console.warn('[REWARDS] ⚠️ Session already rewarded:', {
+        userId,
+        sessionId,
+        type
+      });
+      return {
+        success: false,
+        error: 'Session already rewarded',
+        alreadyRewarded: true
+      };
+    }
+
+    // Define rewards based on session type
+    const rewards = {
+      review: {
+        xp: 10,
+        gems: 5,
+        description: 'Vocabulary Review'
+      },
+      roleplay: {
+        xp: 50,
+        gems: 20,
+        description: 'Roleplay Session'
+      }
+    };
+
+    const reward = rewards[type];
+    
+    if (!reward) {
+      console.warn('[REWARDS] ⚠️ Unknown session type:', type);
+      return {
+        success: false,
+        error: 'Unknown session type'
+      };
+    }
+
+    console.log('[REWARDS] 🏆 Awarding:', {
+      xp: reward.xp,
+      gems: reward.gems,
+      sessionType: reward.description
+    });
+
+    // Update user's XP, Gems, and mark session as rewarded
+    await userRef.update({
+      xp: admin.firestore.FieldValue.increment(reward.xp),
+      gems: admin.firestore.FieldValue.increment(reward.gems),
+      rewardedSessions: admin.firestore.FieldValue.arrayUnion(sessionId)
+    });
+
+    console.log('[REWARDS] ✅ Rewards granted successfully:', {
+      userId,
+      sessionId,
+      xpAwarded: reward.xp,
+      gemsAwarded: reward.gems
+    });
+
+    return {
+      success: true,
+      xpAwarded: reward.xp,
+      gemsAwarded: reward.gems,
+      sessionType: reward.description,
+      sessionId: sessionId
+    };
+    
+  } catch (error) {
+    console.error('[REWARDS] ❌ Error granting rewards:', {
+      error: error.message,
+      stack: error.stack,
+      userId,
+      type,
+      sessionId
+    });
+    throw error;
+  }
+};
+
 module.exports = {
   calculateNextReview,
   updateStreak,
-  processReviewBatch
+  processReviewBatch,
+  grantSessionRewards
 };

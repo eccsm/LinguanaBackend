@@ -36,6 +36,10 @@
         {
             "src": "/extract-vocabulary",
             "dest": "/api/extract-vocabulary"
+        },
+        {
+            "src": "/grant-rewards",
+            "dest": "/api/grant-rewards"
         }
     ]
 }
