@@ -24,9 +24,11 @@ backend/
 │   ├── lesson-complete.js # Lesson completion & streak tracking
 │   ├── review.js        # Vocabulary review & SRS processing
 │   ├── user-activity.js # User login/activity tracking
-│   └── extract-vocabulary.js # AI-powered vocabulary extraction
+│   ├── extract-vocabulary.js # AI-powered vocabulary extraction
+│   ├── grant-rewards.js # Session reward granting
+│   └── check-session-rewarded.js # Check reward status
 ├── services/
-│   ├── gamification.js  # SRS algorithm & streak logic
+│   ├── gamification.js  # SRS algorithm, streak logic & rewards
 │   └── vocabularyExtraction.js # OpenAI vocabulary extraction
 ├── utils/
 │   ├── parseMultipart.js  # File upload parser for serverless
@@ -306,6 +308,71 @@ Response:
 }
 
 Note: Uses OpenAI GPT-3.5 to intelligently extract key vocabulary from conversations and create flashcards with translations and example sentences. Automatically detects duplicate words.
+```
+
+### Grant Session Rewards
+```
+POST https://your-project.vercel.app/grant-rewards
+
+Headers:
+- Authorization: Bearer <firebase_id_token>
+- x-client-secret: <your_client_secret> (optional)
+
+Content-Type: application/json
+
+Body:
+{
+  "userId": "user123", // Optional if using Firebase token
+  "sessionId": "session_abc123",
+  "type": "roleplay"  // Options: "roleplay" or "review"
+}
+
+Response (Success):
+{
+  "success": true,
+  "message": "Rewards granted successfully",
+  "userId": "user123",
+  "sessionId": "session_abc123",
+  "xpAwarded": 50,
+  "gemsAwarded": 20,
+  "sessionType": "Roleplay Session"
+}
+
+Response (Already Rewarded - Status 409):
+{
+  "error": "Session already rewarded",
+  "alreadyRewarded": true,
+  "message": "This session has already been rewarded"
+}
+
+Note: Prevents duplicate rewards for the same session. Rewards: Roleplay = 50 XP + 20 gems, Review = 10 XP + 5 gems
+```
+
+### Check Session Rewarded Status
+```
+POST https://your-project.vercel.app/check-session-rewarded
+
+Headers:
+- Authorization: Bearer <firebase_id_token>
+- x-client-secret: <your_client_secret> (optional)
+
+Content-Type: application/json
+
+Body:
+{
+  "userId": "user123", // Optional if using Firebase token
+  "sessionId": "session_abc123"
+}
+
+Response:
+{
+  "success": true,
+  "sessionId": "session_abc123",
+  "rewarded": false,  // true if already rewarded
+  "message": "Session not yet rewarded"
+}
+
+Note: Check if a session has already been rewarded before showing reward modal to users
 ```
 
 ## 🔐 Setting Environment Variables in Vercel
