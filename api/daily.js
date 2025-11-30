@@ -447,24 +447,39 @@ async function handleChallenge(req, res) {
     const { nativeLanguage = 'en', userId } = req.query;
     const today = new Date().toISOString().split('T')[0];
     
-    // Check if user has already completed today's challenge
+    // Check if user has already completed OR has in-progress challenge
     if (userId) {
       const db = admin.firestore();
       const existingScoreQuery = await db.collection('dailyChallengeScores')
         .where('userId', '==', userId)
         .where('date', '==', today)
-        .where('completed', '==', true)
         .limit(1)
         .get();
 
       if (!existingScoreQuery.empty) {
-        return res.status(403).json({ 
-          success: false, 
-          error: 'Already completed',
-          message: 'You have already completed today\'s challenge. Come back tomorrow!',
-          alreadyCompleted: true,
-          completedAt: existingScoreQuery.docs[0].data().timestamp
-        });
+        const existingData = existingScoreQuery.docs[0].data();
+        
+        // If already completed, block
+        if (existingData.completed) {
+          return res.status(403).json({ 
+            success: false, 
+            error: 'Already completed',
+            message: 'You have already completed today\'s challenge. Come back tomorrow!',
+            alreadyCompleted: true,
+            completedAt: existingData.timestamp
+          });
+        }
+        
+        // If in progress, return saved progress
+        if (existingData.savedProgress) {
+          console.log(`[RESUME] User has saved progress, returning it`);
+          return res.status(200).json({
+            success: true,
+            hasProgress: true,
+            savedProgress: existingData.savedProgress,
+            message: 'Resume from where you left off!'
+          });
+        }
       }
     }
     
@@ -543,7 +558,8 @@ async function handleSubmitScore(req, res) {
       correctAnswers, 
       wrongAnswers,
       usedAdContinue = false, // Whether user watched ad to continue after 3 mistakes
-      completed = false // Whether user finished all questions
+      completed = false, // Whether user finished all questions
+      savedProgress = null // Progress data for resuming (if not completed)
     } = req.body;
 
     if (!userId || score === undefined || !maxScore) {
@@ -575,7 +591,7 @@ async function handleSubmitScore(req, res) {
       }
       
       // Update existing incomplete submission
-      await existingDoc.ref.update({
+      const updateData = {
         score,
         completionTime,
         correctAnswers,
@@ -583,10 +599,21 @@ async function handleSubmitScore(req, res) {
         usedAdContinue,
         completed,
         timestamp: FieldValue.serverTimestamp(),
-      });
+      };
+      
+      // Save progress if not completed
+      if (!completed && savedProgress) {
+        updateData.savedProgress = savedProgress;
+        console.log(`[SAVE-PROGRESS] Saving progress for ${userId}`);
+      } else if (completed) {
+        // Remove saved progress when completed
+        updateData.savedProgress = admin.firestore.FieldValue.delete();
+      }
+      
+      await existingDoc.ref.update(updateData);
     } else {
       // Create new submission
-      await db.collection('dailyChallengeScores').add({
+      const newSubmission = {
         userId,
         displayName: displayName || 'Anonymous',
         date: today,
@@ -598,7 +625,15 @@ async function handleSubmitScore(req, res) {
         usedAdContinue,
         completed,
         timestamp: FieldValue.serverTimestamp(),
-      });
+      };
+      
+      // Add savedProgress if not completed
+      if (!completed && savedProgress) {
+        newSubmission.savedProgress = savedProgress;
+        console.log(`[SAVE-PROGRESS] Creating new entry with progress for ${userId}`);
+      }
+      
+      await db.collection('dailyChallengeScores').add(newSubmission);
     }
 
     // Only update streak if user completed the challenge
