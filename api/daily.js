@@ -1,10 +1,41 @@
 /**
- * Daily Challenge API
- * Generates a deterministic daily challenge that's the same for all users
- * Uses date-based seed for consistency
+ * Consolidated Daily Challenge API
+ * Handles all daily challenge routes in a single serverless function
+ * Uses OpenAI to generate fresh, themed word lists daily
+ * Routes:
+ *   GET  /daily?action=challenge&language=es&nativeLanguage=en
+ *   GET  /daily?action=leaderboard&language=es&limit=100
+ *   POST /daily?action=submit-score
  */
 
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const axios = require('axios');
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+// Daily themes that rotate based on day of year
+const THEMES = [
+  'Travel & Transportation',
+  'Food & Dining',
+  'Shopping & Money',
+  'Health & Body',
+  'Family & Relationships',
+  'Work & Business',
+  'Education & Learning',
+  'Home & Living',
+  'Weather & Nature',
+  'Sports & Hobbies',
+  'Technology & Communication',
+  'Emotions & Feelings',
+  'Time & Schedules',
+  'Clothing & Fashion',
+  'Entertainment & Culture',
+];
+
+function getTodayTheme() {
+  const dayOfYear = Math.floor((new Date() - new Date(new Date().getFullYear(), 0, 0)) / 1000 / 60 / 60 / 24);
+  return THEMES[dayOfYear % THEMES.length];
+}
 
 // Word pools for different languages
 const WORD_POOLS = {
@@ -100,26 +131,17 @@ const WORD_POOLS = {
   ],
 };
 
-// Game types
-const GAME_TYPES = [
-  'translation', // Match word to translation
-  'reverse_translation', // Match translation to word
-  'fill_blank', // Fill in missing letters
-  'multiple_choice', // Choose correct translation from 4 options
-  'listening', // Match audio to text (future enhancement)
-];
+const GAME_TYPES = ['translation', 'reverse_translation', 'fill_blank', 'multiple_choice', 'listening'];
 
-// Seeded random number generator for consistency
+// Seeded random number generator
 class SeededRandom {
   constructor(seed) {
     this.seed = seed;
   }
-
   next() {
     this.seed = (this.seed * 9301 + 49297) % 233280;
     return this.seed / 233280;
   }
-
   shuffle(array) {
     const arr = [...array];
     for (let i = arr.length - 1; i > 0; i--) {
@@ -128,32 +150,24 @@ class SeededRandom {
     }
     return arr;
   }
-
   choice(array) {
     return array[Math.floor(this.next() * array.length)];
   }
 }
 
-// Get today's date seed (same for all users on the same day)
 function getTodaySeed() {
   const today = new Date();
-  const year = today.getFullYear();
-  const month = today.getMonth() + 1;
-  const day = today.getDate();
-  return year * 10000 + month * 100 + day; // e.g., 20251130
+  return today.getFullYear() * 10000 + (today.getMonth() + 1) * 100 + today.getDate();
 }
 
-// Generate daily challenge
-function generateDailyChallenge(language = 'es', userNativeLanguage = 'en') {
+function generateDailyChallengeFromPool(wordPool, language = 'es', userNativeLanguage = 'en') {
   const seed = getTodaySeed();
   const rng = new SeededRandom(seed);
-
-  const wordPool = WORD_POOLS[language] || WORD_POOLS.es;
+  const theme = getTodayTheme();
   
-  // Select 10 words for the daily challenge
-  const selectedWords = rng.shuffle(wordPool).slice(0, 10);
+  // Use all 10 words from the pool (already selected by OpenAI)
+  const selectedWords = wordPool.slice(0, 10);
 
-  // Generate 10 questions with varying difficulty
   const questions = selectedWords.map((wordData, index) => {
     const gameType = GAME_TYPES[index % GAME_TYPES.length];
     const targetTranslation = wordData.translations[userNativeLanguage] || wordData.translations.en;
@@ -170,7 +184,6 @@ function generateDailyChallenge(language = 'es', userNativeLanguage = 'en') {
           difficulty: wordData.difficulty,
           points: wordData.difficulty * 10,
         };
-
       case 'reverse_translation':
         return {
           id: index + 1,
@@ -182,7 +195,6 @@ function generateDailyChallenge(language = 'es', userNativeLanguage = 'en') {
           difficulty: wordData.difficulty,
           points: wordData.difficulty * 10,
         };
-
       case 'fill_blank':
         const { blankedWord, correctLetter } = createBlankWord(wordData.word, rng);
         return {
@@ -194,9 +206,8 @@ function generateDailyChallenge(language = 'es', userNativeLanguage = 'en') {
           correctAnswer: correctLetter,
           options: generateLetterOptions(correctLetter, rng),
           difficulty: wordData.difficulty,
-          points: wordData.difficulty * 15, // Harder, more points
+          points: wordData.difficulty * 15,
         };
-
       case 'multiple_choice':
       default:
         return {
@@ -213,40 +224,34 @@ function generateDailyChallenge(language = 'es', userNativeLanguage = 'en') {
   });
 
   return {
-    date: new Date().toISOString().split('T')[0], // YYYY-MM-DD
+    date: new Date().toISOString().split('T')[0],
     seed,
     language,
     userNativeLanguage,
+    theme,
     totalQuestions: questions.length,
     maxScore: questions.reduce((sum, q) => sum + q.points, 0),
     questions,
   };
 }
 
-// Helper: Generate wrong answer options for translation
 function generateOptions(wordData, wordPool, targetLang, rng, count = 3) {
   const correct = wordData.translations[targetLang] || wordData.translations.en;
   const wrongOptions = wordPool
     .filter(w => w.word !== wordData.word)
     .map(w => w.translations[targetLang] || w.translations.en)
     .filter(t => t !== correct);
-  
   const selected = rng.shuffle(wrongOptions).slice(0, count);
   return rng.shuffle([correct, ...selected]);
 }
 
-// Helper: Generate wrong answer options for reverse translation
 function generateReverseOptions(wordData, wordPool, rng, count = 3) {
   const correct = wordData.word;
-  const wrongOptions = wordPool
-    .filter(w => w.word !== correct)
-    .map(w => w.word);
-  
+  const wrongOptions = wordPool.filter(w => w.word !== correct).map(w => w.word);
   const selected = rng.shuffle(wrongOptions).slice(0, count);
   return rng.shuffle([correct, ...selected]);
 }
 
-// Helper: Create blanked word for fill-in-the-blank
 function createBlankWord(word, rng) {
   const index = Math.floor(rng.next() * word.length);
   const correctLetter = word[index];
@@ -254,37 +259,346 @@ function createBlankWord(word, rng) {
   return { blankedWord, correctLetter };
 }
 
-// Helper: Generate letter options
 function generateLetterOptions(correctLetter, rng) {
   const alphabet = 'abcdefghijklmnopqrstuvwxyz';
-  const wrongLetters = alphabet
-    .split('')
-    .filter(l => l !== correctLetter.toLowerCase());
-  
+  const wrongLetters = alphabet.split('').filter(l => l !== correctLetter.toLowerCase());
   const selected = rng.shuffle(wrongLetters).slice(0, 3);
   return rng.shuffle([correctLetter, ...selected]);
 }
 
-// API Handler
-module.exports = async (req, res) => {
+// Generate words using OpenAI
+async function generateWordsWithOpenAI(language, theme) {
   try {
-    const { language = 'es', nativeLanguage = 'en' } = req.query;
+    console.log(`[OPENAI] Generating words for ${language} - Theme: ${theme}`);
 
-    console.log(`[DAILY-CHALLENGE] Generating for language: ${language}, native: ${nativeLanguage}`);
+    const languageNames = {
+      es: 'Spanish',
+      fr: 'French',
+      de: 'German',
+      tr: 'Turkish',
+      ar: 'Arabic',
+    };
 
-    const challenge = generateDailyChallenge(language, nativeLanguage);
+    const prompt = `Generate a JSON array of exactly 10 vocabulary words for learning ${languageNames[language] || 'Spanish'}.
 
-    res.status(200).json({
-      success: true,
-      challenge,
-    });
+Theme: ${theme}
+
+For each word, provide:
+- The word in ${languageNames[language] || 'Spanish'}
+- Translations to: English, Turkish, German, French, Arabic
+- A difficulty level (1=beginner, 2=intermediate, 3=advanced)
+
+Requirements:
+- Mix of difficulty levels (5 level-1, 3 level-2, 2 level-3)
+- Common, practical vocabulary
+- Relevant to the theme
+- Appropriate for language learners
+
+Format as a JSON array:
+[
+  {
+    "word": "palabra",
+    "translations": {
+      "en": "word",
+      "tr": "kelime",
+      "de": "Wort",
+      "fr": "mot",
+      "ar": "كلمة"
+    },
+    "difficulty": 1
+  },
+  ...
+]
+
+Return ONLY the JSON array, no explanation.`;
+
+    const response = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a language learning expert. Generate vocabulary lists as valid JSON arrays only.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 1500,
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    const content = response.data.choices[0].message.content.trim();
+    
+    // Extract JSON from response (remove markdown code blocks if present)
+    const jsonMatch = content.match(/\[\s*\{[\s\S]*\}\s*\]/);
+    if (!jsonMatch) {
+      throw new Error('Failed to extract JSON from OpenAI response');
+    }
+
+    const words = JSON.parse(jsonMatch[0]);
+    
+    if (!Array.isArray(words) || words.length !== 10) {
+      throw new Error(`Invalid word count: expected 10, got ${words.length}`);
+    }
+
+    console.log(`[OPENAI] Successfully generated ${words.length} words`);
+    return words;
 
   } catch (error) {
-    console.error('[DAILY-CHALLENGE] Error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to generate daily challenge',
-      details: error.message,
+    console.error('[OPENAI] Error generating words:', error.message);
+    throw error;
+  }
+}
+
+// Get or generate today's word pool
+async function getTodayWordPool(language) {
+  const db = getFirestore();
+  const today = new Date().toISOString().split('T')[0];
+  const theme = getTodayTheme();
+
+  try {
+    // Check if we already generated words for today
+    const cacheRef = db.collection('dailyChallengeCache').doc(`${today}_${language}`);
+    const cacheDoc = await cacheRef.get();
+
+    if (cacheDoc.exists) {
+      console.log(`[CACHE] Using cached words for ${today} - ${language}`);
+      return cacheDoc.data().words;
+    }
+
+    // Generate new words with OpenAI
+    console.log(`[CACHE] No cache found, generating new words...`);
+    const words = await generateWordsWithOpenAI(language, theme);
+
+    // Cache the words for the day
+    await cacheRef.set({
+      date: today,
+      language,
+      theme,
+      words,
+      generatedAt: FieldValue.serverTimestamp(),
     });
+
+    console.log(`[CACHE] Cached words for ${today} - ${language}`);
+    return words;
+
+  } catch (error) {
+    console.error('[CACHE] Error getting word pool:', error.message);
+    
+    // Fallback to static words if OpenAI fails
+    console.log('[CACHE] Falling back to static word pool');
+    return WORD_POOLS[language] || WORD_POOLS.es;
+  }
+}
+
+// Handler functions
+async function handleChallenge(req, res) {
+  try {
+    const { language = 'es', nativeLanguage = 'en' } = req.query;
+    
+    // Get today's word pool (from cache or generate new)
+    const wordPool = await getTodayWordPool(language);
+    
+    // Generate challenge using the word pool
+    const challenge = generateDailyChallengeFromPool(wordPool, language, nativeLanguage);
+    
+    res.status(200).json({ success: true, challenge });
+  } catch (error) {
+    console.error('[DAILY-CHALLENGE] Error:', error);
+    res.status(500).json({ success: false, error: 'Failed to generate challenge', details: error.message });
+  }
+}
+
+async function handleLeaderboard(req, res) {
+  try {
+    const { date, language = 'es', limit = 100 } = req.query;
+    const db = getFirestore();
+    const today = date || new Date().toISOString().split('T')[0];
+
+    const scoresRef = db.collection('dailyChallengeScores');
+    const query = scoresRef
+      .where('date', '==', today)
+      .where('language', '==', language)
+      .orderBy('score', 'desc')
+      .orderBy('completionTime', 'asc')
+      .limit(parseInt(limit));
+
+    const snapshot = await query.get();
+    const leaderboard = [];
+    let rank = 1;
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      leaderboard.push({
+        rank,
+        userId: data.userId,
+        displayName: data.displayName || 'Anonymous',
+        score: data.score,
+        maxScore: data.maxScore,
+        percentage: Math.round((data.score / data.maxScore) * 100),
+        completionTime: data.completionTime,
+        lives: data.lives || 3,
+        streak: data.streak || 1,
+        timestamp: data.timestamp,
+      });
+      rank++;
+    });
+
+    const stats = {
+      totalParticipants: leaderboard.length,
+      averageScore: leaderboard.length > 0 
+        ? Math.round(leaderboard.reduce((sum, entry) => sum + entry.score, 0) / leaderboard.length)
+        : 0,
+      highestScore: leaderboard[0]?.score || 0,
+    };
+
+    res.status(200).json({ success: true, date: today, language, leaderboard, stats });
+  } catch (error) {
+    console.error('[DAILY-LEADERBOARD] Error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch leaderboard', details: error.message });
+  }
+}
+
+async function handleSubmitScore(req, res) {
+  try {
+    const { userId, displayName, date, language, score, maxScore, completionTime, lives, correctAnswers, wrongAnswers } = req.body;
+
+    if (!userId || score === undefined || !maxScore) {
+      return res.status(400).json({ success: false, error: 'Missing required fields' });
+    }
+
+    const db = getFirestore();
+    const today = date || new Date().toISOString().split('T')[0];
+
+    const existingScoreQuery = await db.collection('dailyChallengeScores')
+      .where('userId', '==', userId)
+      .where('date', '==', today)
+      .where('language', '==', language)
+      .get();
+
+    let isNewSubmission = existingScoreQuery.empty;
+
+    if (!isNewSubmission) {
+      const existingDoc = existingScoreQuery.docs[0];
+      const existingData = existingDoc.data();
+      if (score > existingData.score) {
+        await existingDoc.ref.update({
+          score,
+          completionTime,
+          lives,
+          correctAnswers,
+          wrongAnswers,
+          timestamp: FieldValue.serverTimestamp(),
+        });
+      } else {
+        return res.status(200).json({
+          success: true,
+          message: 'Score submitted but not improved',
+          currentScore: existingData.score,
+          newScore: score,
+        });
+      }
+    } else {
+      await db.collection('dailyChallengeScores').add({
+        userId,
+        displayName: displayName || 'Anonymous',
+        date: today,
+        language,
+        score,
+        maxScore,
+        completionTime,
+        lives,
+        correctAnswers,
+        wrongAnswers,
+        timestamp: FieldValue.serverTimestamp(),
+      });
+    }
+
+    const userRef = db.collection('users').doc(userId);
+    const userDoc = await userRef.get();
+
+    if (userDoc.exists) {
+      const userData = userDoc.data();
+      const lastPlayedDate = userData.lastDailyChallengeDate;
+      const currentStreak = userData.dailyChallengeStreak || 0;
+      const longestStreak = userData.longestDailyChallengeStreak || 0;
+
+      let newStreak = 1;
+      if (lastPlayedDate) {
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+        if (lastPlayedDate === yesterdayStr) {
+          newStreak = currentStreak + 1;
+        } else if (lastPlayedDate === today) {
+          newStreak = currentStreak;
+        }
+      }
+
+      const newLongestStreak = Math.max(newStreak, longestStreak);
+
+      await userRef.update({
+        lastDailyChallengeDate: today,
+        dailyChallengeStreak: newStreak,
+        longestDailyChallengeStreak: newLongestStreak,
+        totalDailyChallengesCompleted: FieldValue.increment(isNewSubmission ? 1 : 0),
+      });
+
+      let streakBonus = null;
+      if (newStreak >= 7) {
+        streakBonus = { type: 'weekly_streak', reward: '🔥 7-day streak!' };
+      } else if (newStreak >= 3) {
+        streakBonus = { type: '3_day_streak', reward: '⭐ 3-day streak!' };
+      }
+
+      res.status(200).json({
+        success: true,
+        message: 'Score submitted successfully',
+        score: { current: score, max: maxScore, percentage: Math.round((score / maxScore) * 100) },
+        streak: { current: newStreak, longest: newLongestStreak, bonus: streakBonus },
+      });
+    } else {
+      res.status(200).json({
+        success: true,
+        message: 'Score submitted successfully',
+        score: { current: score, max: maxScore, percentage: Math.round((score / maxScore) * 100) },
+      });
+    }
+  } catch (error) {
+    console.error('[SUBMIT-SCORE] Error:', error);
+    res.status(500).json({ success: false, error: 'Failed to submit score', details: error.message });
+  }
+}
+
+// Main router
+module.exports = async (req, res) => {
+  const { action } = req.query;
+
+  switch (action) {
+    case 'challenge':
+      return handleChallenge(req, res);
+    case 'leaderboard':
+      return handleLeaderboard(req, res);
+    case 'submit-score':
+      if (req.method !== 'POST') {
+        return res.status(405).json({ success: false, error: 'Method not allowed' });
+      }
+      return handleSubmitScore(req, res);
+    default:
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid action. Use: ?action=challenge, ?action=leaderboard, or ?action=submit-score'
+      });
   }
 };
