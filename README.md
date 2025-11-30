@@ -21,6 +21,7 @@ backend/
 │   ├── transcribe.js    # STT endpoint (POST /transcribe)
 │   ├── speak.js         # TTS endpoint (POST /speak)
 │   ├── chat.js          # Chat completion endpoint
+│   ├── daily.js         # Universal daily challenge (multi-language)
 │   ├── lesson-complete.js # Lesson completion & streak tracking
 │   ├── review.js        # Vocabulary review & SRS processing
 │   ├── user-activity.js # User login/activity tracking
