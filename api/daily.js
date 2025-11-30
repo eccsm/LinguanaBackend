@@ -472,13 +472,32 @@ async function handleChallenge(req, res) {
         
         // If in progress, return saved progress
         if (existingData.savedProgress) {
-          console.log(`[RESUME] User has saved progress, returning it`);
-          return res.status(200).json({
-            success: true,
-            hasProgress: true,
-            savedProgress: existingData.savedProgress,
-            message: 'Resume from where you left off!'
-          });
+          const progress = existingData.savedProgress;
+          
+          // **CRITICAL FIX**: Validate progress - only return if truly in progress
+          const isValidProgress = 
+            progress.lives > 0 && 
+            progress.currentQuestion < progress.challenge.totalQuestions;
+          
+          if (isValidProgress) {
+            console.log(`[RESUME] User has saved progress, returning it`);
+            return res.status(200).json({
+              success: true,
+              hasProgress: true,
+              savedProgress: existingData.savedProgress,
+              message: 'Resume from where you left off!'
+            });
+          } else {
+            console.log(`[RESUME] Invalid progress (lives: ${progress.lives}, Q: ${progress.currentQuestion}/${progress.challenge.totalQuestions}) - treating as completed`);
+            // Game was over, treat as completed
+            return res.status(403).json({ 
+              success: false, 
+              error: 'Already completed',
+              message: 'You have already attempted today\'s challenge. Come back tomorrow!',
+              alreadyCompleted: true,
+              completedAt: existingData.timestamp
+            });
+          }
         }
       }
     }
