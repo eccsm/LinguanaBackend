@@ -197,24 +197,55 @@ function generateUniversalDailyChallenge(wordPool, userNativeLanguage = 'en') {
   const rng = new SeededRandom(seed);
   const theme = getTodayTheme();
   
-  // Use all 15 words from the pool (from different languages)
-  const selectedWords = wordPool.slice(0, 15);
+  console.log(`[CHALLENGE] Generating for native language: ${userNativeLanguage}`);
+  console.log(`[CHALLENGE] Word pool size: ${wordPool.length}`);
+  
+  // **CRITICAL FIX**: Filter out words from user's native language
+  // Spanish user should NOT get Spanish words to translate
+  const filteredWords = wordPool.filter(wordData => {
+    const wordLanguage = wordData.language || 'en';
+    const isNativeLanguage = wordLanguage === userNativeLanguage;
+    
+    if (isNativeLanguage) {
+      console.log(`[FILTER] Excluding "${wordData.word}" (${wordLanguage}) - matches native language`);
+    }
+    
+    return !isNativeLanguage;
+  });
+  
+  console.log(`[CHALLENGE] After filtering: ${filteredWords.length} words available`);
+  
+  // If we don't have enough words after filtering, add some English words as fallback
+  if (filteredWords.length < 15 && userNativeLanguage !== 'en') {
+    console.log('[CHALLENGE] Not enough words, adding English fallbacks');
+    const englishWords = wordPool.filter(w => (w.language || 'en') === 'en');
+    filteredWords.push(...englishWords.slice(0, 15 - filteredWords.length));
+  }
+  
+  // Select 15 words from filtered pool
+  const selectedWords = filteredWords.slice(0, 15);
+  console.log(`[CHALLENGE] Selected ${selectedWords.length} words for questions`);
 
   const questions = selectedWords.map((wordData, index) => {
     const wordLanguage = wordData.language || 'en';
-    const wordLanguageName = ALL_LANGUAGES.find(l => l.code === wordLanguage)?.name || 'Unknown';
+    const wordLanguageInfo = ALL_LANGUAGES.find(l => l.code === wordLanguage) || { name: 'English', nativeName: 'English' };
     const targetTranslation = wordData.translations[userNativeLanguage] || wordData.translations.en;
+    
+    // Get native language name for display
+    const userLanguageInfo = ALL_LANGUAGES.find(l => l.code === userNativeLanguage) || { name: 'English', nativeName: 'English' };
 
     // All questions are multiple choice translation
     return {
       id: index + 1,
       type: 'multiple_choice',
-      question: `What does "${wordData.word}" mean?`,
+      question: `What does "${wordData.word}" mean in ${userLanguageInfo.name}?`,
+      hint: `This word is from ${wordLanguageInfo.name} (${wordLanguageInfo.nativeName})`,
       word: wordData.word,
-      wordLanguage: wordLanguageName,
+      wordLanguage: wordLanguageInfo.name,
       wordLanguageCode: wordLanguage,
+      wordLanguageNative: wordLanguageInfo.nativeName,
       correctAnswer: targetTranslation,
-      options: generateOptions(wordData, wordPool, userNativeLanguage, rng, 4),
+      options: generateOptions(wordData, filteredWords, userNativeLanguage, rng, 3),
       difficulty: wordData.difficulty,
       points: wordData.difficulty * 10,
     };
