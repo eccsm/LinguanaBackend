@@ -522,12 +522,15 @@ async function handleLeaderboard(req, res) {
     const today = date || new Date().toISOString().split('T')[0];
 
     const scoresRef = db.collection('dailyChallengeScores');
+    // **GLOBAL LEADERBOARD**: Show ALL attempts (completed AND failed)
+    // This allows partial scores to be visible (e.g., 80/180 pts)
     const query = scoresRef
       .where('date', '==', today)
-      .where('completed', '==', true)
       .orderBy('score', 'desc')
       .orderBy('completionTime', 'asc')
       .limit(parseInt(limit));
+    
+    console.log(`[LEADERBOARD] Fetching global leaderboard for ${today}...`);
 
     const snapshot = await query.get();
     const leaderboard = [];
@@ -546,10 +549,13 @@ async function handleLeaderboard(req, res) {
         correctAnswers: data.correctAnswers,
         wrongAnswers: data.wrongAnswers,
         usedAdContinue: data.usedAdContinue || false,
+        completed: data.completed || false, // Show if they finished all questions
         timestamp: data.timestamp,
       });
       rank++;
     });
+    
+    console.log(`[LEADERBOARD] Found ${leaderboard.length} entries`);
 
     const stats = {
       totalParticipants: leaderboard.length,
@@ -723,6 +729,95 @@ async function handleSubmitScore(req, res) {
   }
 }
 
+// Award gems to yesterday's winner
+async function handleAwardWinner(req, res) {
+  try {
+    const { date } = req.query;
+    const db = admin.firestore();
+    
+    // Get yesterday's date if not specified
+    const targetDate = date || (() => {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      return yesterday.toISOString().split('T')[0];
+    })();
+    
+    console.log(`[AWARD-WINNER] Checking for winner on ${targetDate}...`);
+    
+    // Get top scorer for that date
+    const scoresRef = db.collection('dailyChallengeScores');
+    const query = scoresRef
+      .where('date', '==', targetDate)
+      .orderBy('score', 'desc')
+      .orderBy('completionTime', 'asc')
+      .limit(1);
+    
+    const snapshot = await query.get();
+    
+    if (snapshot.empty) {
+      console.log(`[AWARD-WINNER] No participants found for ${targetDate}`);
+      return res.status(404).json({
+        success: false,
+        message: `No participants found for ${targetDate}`
+      });
+    }
+    
+    const winnerDoc = snapshot.docs[0];
+    const winnerData = winnerDoc.data();
+    const winnerId = winnerData.userId;
+    
+    console.log(`[AWARD-WINNER] Winner: ${winnerData.displayName} (${winnerId}) with ${winnerData.score} pts`);
+    
+    // Check if already awarded
+    if (winnerData.gemAwarded) {
+      console.log(`[AWARD-WINNER] Gems already awarded for ${targetDate}`);
+      return res.status(200).json({
+        success: true,
+        message: 'Gems already awarded',
+        winner: {
+          userId: winnerId,
+          displayName: winnerData.displayName,
+          score: winnerData.score,
+          alreadyAwarded: true
+        }
+      });
+    }
+    
+    // Award 100 gems to winner
+    const userRef = db.collection('users').doc(winnerId);
+    await userRef.update({
+      gems: FieldValue.increment(100)
+    });
+    
+    // Mark as awarded
+    await winnerDoc.ref.update({
+      gemAwarded: true,
+      gemAwardedAt: FieldValue.serverTimestamp()
+    });
+    
+    console.log(`[AWARD-WINNER] ✅ Awarded 100 gems to ${winnerData.displayName}`);
+    
+    return res.status(200).json({
+      success: true,
+      message: 'Winner awarded 100 gems!',
+      winner: {
+        userId: winnerId,
+        displayName: winnerData.displayName,
+        score: winnerData.score,
+        gemsAwarded: 100
+      }
+    });
+    
+  } catch (error) {
+    console.error('[AWARD-WINNER] Error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to award winner',
+      details: error.message
+    });
+  }
+}
+
 // Main router
 module.exports = async (req, res) => {
   const { action } = req.query;
@@ -737,10 +832,12 @@ module.exports = async (req, res) => {
         return res.status(405).json({ success: false, error: 'Method not allowed' });
       }
       return handleSubmitScore(req, res);
+    case 'award-winner':
+      return handleAwardWinner(req, res);
     default:
       return res.status(400).json({
         success: false,
-        error: 'Invalid action. Use: ?action=challenge, ?action=leaderboard, or ?action=submit-score'
+        error: 'Invalid action. Use: ?action=challenge, ?action=leaderboard, ?action=submit-score, or ?action=award-winner'
       });
   }
 };
