@@ -6,10 +6,6 @@
             "dest": "/api/health"
         },
         {
-            "src": "/health",
-            "dest": "/api/health"
-        },
-        {
             "src": "/transcribe",
             "dest": "/api/transcribe"
         },
