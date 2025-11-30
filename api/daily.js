@@ -8,7 +8,9 @@
  *   POST /daily?action=submit-score
  */
 
-const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { initializeFirebase } = require('../utils/firebaseInit');
+const admin = initializeFirebase();
+const { FieldValue } = require('firebase-admin/firestore');
 const axios = require('axios');
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -362,7 +364,7 @@ Return ONLY the JSON array, no explanation.`;
 
 // Get or generate today's word pool
 async function getTodayWordPool(language) {
-  const db = getFirestore();
+  const db = admin.firestore();
   const today = new Date().toISOString().split('T')[0];
   const theme = getTodayTheme();
 
@@ -422,7 +424,7 @@ async function handleChallenge(req, res) {
 async function handleLeaderboard(req, res) {
   try {
     const { date, language = 'es', limit = 100 } = req.query;
-    const db = getFirestore();
+    const db = admin.firestore();
     const today = date || new Date().toISOString().split('T')[0];
 
     const scoresRef = db.collection('dailyChallengeScores');
@@ -477,7 +479,7 @@ async function handleSubmitScore(req, res) {
       return res.status(400).json({ success: false, error: 'Missing required fields' });
     }
 
-    const db = getFirestore();
+    const db = admin.firestore();
     const today = date || new Date().toISOString().split('T')[0];
 
     const existingScoreQuery = await db.collection('dailyChallengeScores')
