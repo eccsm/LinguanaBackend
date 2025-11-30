@@ -40,6 +40,18 @@
         {
             "src": "/grant-rewards",
             "dest": "/api/grant-rewards"
+        },
+        {
+            "src": "/daily-challenge",
+            "dest": "/api/daily-challenge"
+        },
+        {
+            "src": "/daily-leaderboard",
+            "dest": "/api/daily-leaderboard"
+        },
+        {
+            "src": "/submit-daily-score",
+            "dest": "/api/submit-daily-score"
         }
     ]
 }
