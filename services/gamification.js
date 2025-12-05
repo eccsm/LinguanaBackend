@@ -59,19 +59,20 @@ const calculateNextReview = (quality, prevData = {}) => {
  */
 const updateStreak = async (userId) => {
   const userRef = db.collection('users').doc(userId);
-  
+
   await db.runTransaction(async (t) => {
     const doc = await t.get(userRef);
     if (!doc.exists) return;
 
     const data = doc.data();
-    const lastActive = data.lastActive ? data.lastActive.toDate() : new Date(0);
+    // Use lastPracticeDate to match DB field name
+    const lastPractice = data.lastPracticeDate ? data.lastPracticeDate.toDate() : new Date(0);
     const today = new Date();
-    
+
     // Normalize to midnight for accurate day comparison
-    const lastDate = new Date(lastActive.setHours(0,0,0,0));
-    const currDate = new Date(today.setHours(0,0,0,0));
-    
+    const lastDate = new Date(lastPractice.setHours(0, 0, 0, 0));
+    const currDate = new Date(today.setHours(0, 0, 0, 0));
+
     const diffTime = Math.abs(currDate - lastDate);
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
@@ -81,12 +82,22 @@ const updateStreak = async (userId) => {
       // Continued streak
       newStreak += 1;
     } else if (diffDays > 1) {
-      // Streak broken (Check for Freeze item here in future)
-      // If user has 'streakFreeze' > 0, decrement freeze and keep streak
-      if (data.inventory && data.inventory.streakFreeze > 0) {
+      // Streak broken - check for active streak freeze buff first
+      const buffs = data.activeBuffs || {};
+      const freezeUntil = buffs.streakFreezeUntil ? buffs.streakFreezeUntil.toDate() : null;
+
+      if (freezeUntil && freezeUntil > new Date()) {
+        // Streak freeze is active - don't break streak
+        console.log('[STREAK] Streak freeze active, preserving streak');
+      } else if (data.inventory && data.inventory.streakFreeze > 0) {
+        // Legacy: auto-consume streak freeze from inventory
         t.update(userRef, { 'inventory.streakFreeze': admin.firestore.FieldValue.increment(-1) });
-        // Streak saved, do not reset
+        console.log('[STREAK] Auto-consumed streak freeze from inventory');
       } else {
+        // Save previousStreak before resetting
+        if (data.currentStreak > 1) {
+          t.update(userRef, { previousStreak: data.currentStreak });
+        }
         newStreak = 1; // Reset
       }
     }
@@ -94,7 +105,7 @@ const updateStreak = async (userId) => {
 
     t.update(userRef, {
       currentStreak: newStreak,
-      lastActive: admin.firestore.FieldValue.serverTimestamp(),
+      lastPracticeDate: admin.firestore.FieldValue.serverTimestamp(),
       longestStreak: Math.max(newStreak, data.longestStreak || 0)
     });
   });
@@ -110,7 +121,7 @@ const processReviewBatch = async (userId, reviews) => {
     reviewCount: reviews.length,
     reviews: reviews.map(r => ({ wordId: r.wordId, quality: r.quality }))
   });
-  
+
   try {
     // Fetch all card documents first
     console.log('[VOCAB_BACKEND] 🔍 Fetching card data from Firestore...');
@@ -118,26 +129,26 @@ const processReviewBatch = async (userId, reviews) => {
       const cardRef = db.collection('users').doc(userId).collection('vocabDeck').doc(review.wordId);
       return cardRef.get().then(doc => ({ review, doc, cardRef }));
     });
-    
+
     const cardData = await Promise.all(cardPromises);
     console.log('[VOCAB_BACKEND] ✅ Card data fetched:', cardData.length, 'cards');
-    
+
     // Process updates in a batch
     const batch = db.batch();
-    
+
     cardData.forEach(({ review, doc, cardRef }, index) => {
       if (!doc.exists) {
         console.warn(`[VOCAB_BACKEND] ⚠️ Card ${review.wordId} not found for user ${userId}`);
         return;
       }
-      
+
       const currentData = doc.data();
       const prevData = {
         interval: currentData.interval || 0,
         repetitions: currentData.repetitions || 0,
         easeFactor: currentData.easeFactor || 2.5
       };
-      
+
       console.log(`[VOCAB_BACKEND] 📊 Card ${index + 1}/${cardData.length}:`, {
         wordId: review.wordId,
         front: currentData.front,
@@ -146,17 +157,17 @@ const processReviewBatch = async (userId, reviews) => {
         prevReps: prevData.repetitions,
         prevEase: prevData.easeFactor
       });
-      
+
       // Calculate next review using SRS algorithm
       const srsUpdate = calculateNextReview(review.quality, prevData);
-      
+
       console.log(`[VOCAB_BACKEND] 🔄 SRS calculation result:`, {
         newInterval: srsUpdate.interval,
         newReps: srsUpdate.repetitions,
         newEase: srsUpdate.easeFactor,
         nextReviewDate: srsUpdate.nextReviewDate.toISOString()
       });
-      
+
       // Update the card with new SRS data
       batch.update(cardRef, {
         interval: srsUpdate.interval,
@@ -167,26 +178,41 @@ const processReviewBatch = async (userId, reviews) => {
         totalReviews: admin.firestore.FieldValue.increment(1)
       });
     });
-    
+
     console.log('[VOCAB_BACKEND] 💾 Committing batch update to Firestore...');
     await batch.commit();
     console.log(`[VOCAB_BACKEND] ✅ Batch committed: ${reviews.length} cards updated`);
-    
+
     // Award XP for completing reviews (10 XP per card)
-    const xpEarned = reviews.length * 10;
+    // Check for active XP buff
+    const userRef = db.collection('users').doc(userId);
+    const userDoc = await userRef.get();
+    const userData = userDoc.data() || {};
+
+    let xpMultiplier = 1;
+    const buffs = userData.activeBuffs || {};
+    if (buffs.xpMultiplierUntil) {
+      const expiresAt = buffs.xpMultiplierUntil.toDate();
+      if (expiresAt > new Date()) {
+        xpMultiplier = buffs.xpMultiplier || 2;
+        console.log('[VOCAB_BACKEND] 🔥 XP Potion active! Multiplier:', xpMultiplier);
+      }
+    }
+
+    const xpEarned = reviews.length * 10 * xpMultiplier;
     console.log(`[VOCAB_BACKEND] 🏆 Awarding XP:`, {
       userId,
       xpEarned,
+      xpMultiplier,
       reviewsProcessed: reviews.length
     });
-    
-    const userRef = db.collection('users').doc(userId);
+
     await userRef.update({
       xp: admin.firestore.FieldValue.increment(xpEarned),
       totalReviews: admin.firestore.FieldValue.increment(reviews.length)
     });
     console.log(`[VOCAB_BACKEND] ✅ User stats updated: +${xpEarned} XP, +${reviews.length} total reviews`);
-    
+
     return { success: true, reviewsProcessed: reviews.length, xpEarned };
   } catch (error) {
     console.error('[VOCAB_BACKEND] ❌ Error processing review batch:', {
@@ -223,7 +249,7 @@ const grantSessionRewards = async (userId, type, sessionId) => {
 
     const userRef = db.collection('users').doc(userId);
     const userDoc = await userRef.get();
-    
+
     if (!userDoc.exists) {
       console.warn('[REWARDS] ⚠️ User document not found:', userId);
       return {
@@ -264,7 +290,7 @@ const grantSessionRewards = async (userId, type, sessionId) => {
     };
 
     const reward = rewards[type];
-    
+
     if (!reward) {
       console.warn('[REWARDS] ⚠️ Unknown session type:', type);
       return {
@@ -273,15 +299,28 @@ const grantSessionRewards = async (userId, type, sessionId) => {
       };
     }
 
+    // Check for active XP buff
+    let xpMultiplier = 1;
+    const buffs = userData.activeBuffs || {};
+    if (buffs.xpMultiplierUntil) {
+      const expiresAt = buffs.xpMultiplierUntil.toDate();
+      if (expiresAt > new Date()) {
+        xpMultiplier = buffs.xpMultiplier || 2;
+        console.log('[REWARDS] 🔥 XP Potion active! Multiplier:', xpMultiplier);
+      }
+    }
+
+    const xpAmount = reward.xp * xpMultiplier;
     console.log('[REWARDS] 🏆 Awarding:', {
-      xp: reward.xp,
+      xp: xpAmount,
       gems: reward.gems,
+      xpMultiplier,
       sessionType: reward.description
     });
 
     // Update user's XP, Gems, and mark session as rewarded
     await userRef.update({
-      xp: admin.firestore.FieldValue.increment(reward.xp),
+      xp: admin.firestore.FieldValue.increment(xpAmount),
       gems: admin.firestore.FieldValue.increment(reward.gems),
       rewardedSessions: admin.firestore.FieldValue.arrayUnion(sessionId)
     });
@@ -300,7 +339,7 @@ const grantSessionRewards = async (userId, type, sessionId) => {
       sessionType: reward.description,
       sessionId: sessionId
     };
-    
+
   } catch (error) {
     console.error('[REWARDS] ❌ Error granting rewards:', {
       error: error.message,
