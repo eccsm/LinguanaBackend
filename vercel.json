@@ -43,7 +43,7 @@
         },
         {
             "src": "/app-ads.txt",
-            "dest": "/api/app-ads.txt"
+            "dest": "/api/app-ads"
         }
     ]
 }
