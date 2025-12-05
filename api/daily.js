@@ -196,32 +196,32 @@ function generateUniversalDailyChallenge(wordPool, userNativeLanguage = 'en') {
   const seed = getTodaySeed();
   const rng = new SeededRandom(seed);
   const theme = getTodayTheme();
-  
+
   console.log(`[CHALLENGE] Generating for native language: ${userNativeLanguage}`);
   console.log(`[CHALLENGE] Word pool size: ${wordPool.length}`);
-  
+
   // **CRITICAL FIX**: Filter out words from user's native language
   // Spanish user should NOT get Spanish words to translate
   const filteredWords = wordPool.filter(wordData => {
     const wordLanguage = wordData.language || 'en';
     const isNativeLanguage = wordLanguage === userNativeLanguage;
-    
+
     if (isNativeLanguage) {
       console.log(`[FILTER] Excluding "${wordData.word}" (${wordLanguage}) - matches native language`);
     }
-    
+
     return !isNativeLanguage;
   });
-  
+
   console.log(`[CHALLENGE] After filtering: ${filteredWords.length} words available`);
-  
+
   // If we don't have enough words after filtering, add some English words as fallback
   if (filteredWords.length < 15 && userNativeLanguage !== 'en') {
     console.log('[CHALLENGE] Not enough words, adding English fallbacks');
     const englishWords = wordPool.filter(w => (w.language || 'en') === 'en');
     filteredWords.push(...englishWords.slice(0, 15 - filteredWords.length));
   }
-  
+
   // Select 15 words from filtered pool
   const selectedWords = filteredWords.slice(0, 15);
   console.log(`[CHALLENGE] Selected ${selectedWords.length} words for questions`);
@@ -230,7 +230,7 @@ function generateUniversalDailyChallenge(wordPool, userNativeLanguage = 'en') {
     const wordLanguage = wordData.language || 'en';
     const wordLanguageInfo = ALL_LANGUAGES.find(l => l.code === wordLanguage) || { name: 'English', nativeName: 'English' };
     const targetTranslation = wordData.translations[userNativeLanguage] || wordData.translations.en;
-    
+
     // Get native language name for display
     const userLanguageInfo = ALL_LANGUAGES.find(l => l.code === userNativeLanguage) || { name: 'English', nativeName: 'English' };
 
@@ -373,7 +373,7 @@ Return ONLY the JSON array, no explanation.`;
     );
 
     const content = response.data.choices[0].message.content.trim();
-    
+
     // Extract JSON from response (remove markdown code blocks if present)
     const jsonMatch = content.match(/\[\s*\{[\s\S]*\}\s*\]/);
     if (!jsonMatch) {
@@ -381,7 +381,7 @@ Return ONLY the JSON array, no explanation.`;
     }
 
     const words = JSON.parse(jsonMatch[0]);
-    
+
     if (!Array.isArray(words) || words.length < 15) {
       console.warn(`[OPENAI] Expected 15 words, got ${words.length}`);
     }
@@ -428,7 +428,7 @@ async function getTodayUniversalWordPool() {
 
   } catch (error) {
     console.error('[CACHE] Error getting universal word pool:', error.message);
-    
+
     // Fallback to a mix of static words if OpenAI fails
     console.log('[CACHE] Falling back to mixed static word pool');
     const fallbackWords = [];
@@ -446,7 +446,7 @@ async function handleChallenge(req, res) {
   try {
     const { nativeLanguage = 'en', userId } = req.query;
     const today = new Date().toISOString().split('T')[0];
-    
+
     // Check if user has already completed OR has in-progress challenge
     if (userId) {
       const db = admin.firestore();
@@ -458,29 +458,33 @@ async function handleChallenge(req, res) {
 
       if (!existingScoreQuery.empty) {
         const existingData = existingScoreQuery.docs[0].data();
-        
+
         // If already completed, block
         if (existingData.completed) {
-          return res.status(403).json({ 
-            success: false, 
+          return res.status(403).json({
+            success: false,
             error: 'Already completed',
             message: 'You have already completed today\'s challenge. Come back tomorrow!',
             alreadyCompleted: true,
             completedAt: existingData.timestamp
           });
         }
-        
+
         // If in progress, return saved progress
         if (existingData.savedProgress) {
           const progress = existingData.savedProgress;
-          
-          // **CRITICAL FIX**: Validate progress - only return if truly in progress
-          const isValidProgress = 
-            progress.lives > 0 && 
-            progress.currentQuestion < progress.challenge.totalQuestions;
-          
+
+          // **CRITICAL FIX**: Use answers.length instead of currentQuestion
+          // answers.length is the reliable source of truth (avoids React closure issues)
+          const answeredQuestions = progress.answers?.length || 0;
+          const totalQuestions = progress.challenge?.totalQuestions || 13;
+
+          const isValidProgress =
+            progress.lives > 0 &&
+            answeredQuestions < totalQuestions;
+
           if (isValidProgress) {
-            console.log(`[RESUME] User has saved progress, returning it`);
+            console.log(`[RESUME] User has saved progress: ${answeredQuestions}/${totalQuestions} questions, ${progress.lives} lives`);
             return res.status(200).json({
               success: true,
               hasProgress: true,
@@ -488,10 +492,10 @@ async function handleChallenge(req, res) {
               message: 'Resume from where you left off!'
             });
           } else {
-            console.log(`[RESUME] Invalid progress (lives: ${progress.lives}, Q: ${progress.currentQuestion}/${progress.challenge.totalQuestions}) - treating as completed`);
+            console.log(`[RESUME] Invalid progress (lives: ${progress.lives}, answered: ${answeredQuestions}/${totalQuestions}) - treating as completed`);
             // Game was over, treat as completed
-            return res.status(403).json({ 
-              success: false, 
+            return res.status(403).json({
+              success: false,
               error: 'Already completed',
               message: 'You have already attempted today\'s challenge. Come back tomorrow!',
               alreadyCompleted: true,
@@ -501,13 +505,13 @@ async function handleChallenge(req, res) {
         }
       }
     }
-    
+
     // Get today's universal word pool (same for everyone)
     const wordPool = await getTodayUniversalWordPool();
-    
+
     // Generate universal challenge using the word pool
     const challenge = generateUniversalDailyChallenge(wordPool, nativeLanguage);
-    
+
     res.status(200).json({ success: true, challenge });
   } catch (error) {
     console.error('[DAILY-CHALLENGE] Error:', error);
@@ -529,7 +533,7 @@ async function handleLeaderboard(req, res) {
       .orderBy('score', 'desc')
       .orderBy('completionTime', 'asc')
       .limit(parseInt(limit));
-    
+
     console.log(`[LEADERBOARD] Fetching global leaderboard for ${today}...`);
 
     const snapshot = await query.get();
@@ -554,12 +558,12 @@ async function handleLeaderboard(req, res) {
       });
       rank++;
     });
-    
+
     console.log(`[LEADERBOARD] Found ${leaderboard.length} entries`);
 
     const stats = {
       totalParticipants: leaderboard.length,
-      averageScore: leaderboard.length > 0 
+      averageScore: leaderboard.length > 0
         ? Math.round(leaderboard.reduce((sum, entry) => sum + entry.score, 0) / leaderboard.length)
         : 0,
       highestScore: leaderboard[0]?.score || 0,
@@ -574,13 +578,13 @@ async function handleLeaderboard(req, res) {
 
 async function handleSubmitScore(req, res) {
   try {
-    const { 
-      userId, 
-      displayName, 
-      score, 
-      maxScore, 
-      completionTime, 
-      correctAnswers, 
+    const {
+      userId,
+      displayName,
+      score,
+      maxScore,
+      completionTime,
+      correctAnswers,
       wrongAnswers,
       usedAdContinue = false, // Whether user watched ad to continue after 3 mistakes
       completed = false, // Whether user finished all questions
@@ -604,7 +608,7 @@ async function handleSubmitScore(req, res) {
     if (!existingScoreQuery.empty) {
       const existingDoc = existingScoreQuery.docs[0];
       const existingData = existingDoc.data();
-      
+
       // If user already completed, don't allow resubmission
       if (existingData.completed) {
         return res.status(403).json({
@@ -614,7 +618,7 @@ async function handleSubmitScore(req, res) {
           existingScore: existingData.score,
         });
       }
-      
+
       // Update existing incomplete submission
       const updateData = {
         score,
@@ -625,7 +629,7 @@ async function handleSubmitScore(req, res) {
         completed,
         timestamp: FieldValue.serverTimestamp(),
       };
-      
+
       // Save progress if not completed
       if (!completed && savedProgress) {
         updateData.savedProgress = savedProgress;
@@ -634,7 +638,7 @@ async function handleSubmitScore(req, res) {
         // Remove saved progress when completed
         updateData.savedProgress = admin.firestore.FieldValue.delete();
       }
-      
+
       await existingDoc.ref.update(updateData);
     } else {
       // Create new submission
@@ -651,13 +655,13 @@ async function handleSubmitScore(req, res) {
         completed,
         timestamp: FieldValue.serverTimestamp(),
       };
-      
+
       // Add savedProgress if not completed
       if (!completed && savedProgress) {
         newSubmission.savedProgress = savedProgress;
         console.log(`[SAVE-PROGRESS] Creating new entry with progress for ${userId}`);
       }
-      
+
       await db.collection('dailyChallengeScores').add(newSubmission);
     }
 
@@ -734,16 +738,16 @@ async function handleAwardWinner(req, res) {
   try {
     const { date } = req.query;
     const db = admin.firestore();
-    
+
     // Get yesterday's date if not specified
     const targetDate = date || (() => {
       const yesterday = new Date();
       yesterday.setDate(yesterday.getDate() - 1);
       return yesterday.toISOString().split('T')[0];
     })();
-    
+
     console.log(`[AWARD-WINNER] Checking for winner on ${targetDate}...`);
-    
+
     // Get top scorer for that date
     const scoresRef = db.collection('dailyChallengeScores');
     const query = scoresRef
@@ -751,9 +755,9 @@ async function handleAwardWinner(req, res) {
       .orderBy('score', 'desc')
       .orderBy('completionTime', 'asc')
       .limit(1);
-    
+
     const snapshot = await query.get();
-    
+
     if (snapshot.empty) {
       console.log(`[AWARD-WINNER] No participants found for ${targetDate}`);
       return res.status(404).json({
@@ -761,13 +765,13 @@ async function handleAwardWinner(req, res) {
         message: `No participants found for ${targetDate}`
       });
     }
-    
+
     const winnerDoc = snapshot.docs[0];
     const winnerData = winnerDoc.data();
     const winnerId = winnerData.userId;
-    
+
     console.log(`[AWARD-WINNER] Winner: ${winnerData.displayName} (${winnerId}) with ${winnerData.score} pts`);
-    
+
     // Check if already awarded
     if (winnerData.gemAwarded) {
       console.log(`[AWARD-WINNER] Gems already awarded for ${targetDate}`);
@@ -782,21 +786,21 @@ async function handleAwardWinner(req, res) {
         }
       });
     }
-    
+
     // Award 100 gems to winner
     const userRef = db.collection('users').doc(winnerId);
     await userRef.update({
       gems: FieldValue.increment(100)
     });
-    
+
     // Mark as awarded
     await winnerDoc.ref.update({
       gemAwarded: true,
       gemAwardedAt: FieldValue.serverTimestamp()
     });
-    
+
     console.log(`[AWARD-WINNER] ✅ Awarded 100 gems to ${winnerData.displayName}`);
-    
+
     return res.status(200).json({
       success: true,
       message: 'Winner awarded 100 gems!',
@@ -807,7 +811,7 @@ async function handleAwardWinner(req, res) {
         gemsAwarded: 100
       }
     });
-    
+
   } catch (error) {
     console.error('[AWARD-WINNER] Error:', error);
     return res.status(500).json({
