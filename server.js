@@ -16,8 +16,8 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Configure multer for file uploads
-const upload = multer({ dest: 'uploads/' });
+// Configure multer for file uploads - use /tmp for Vercel serverless
+const upload = multer({ dest: '/tmp/' });
 
 // Enable CORS
 app.use((req, res, next) => {
@@ -101,7 +101,7 @@ app.post('/speak', async (req, res) => {
       'https://api.openai.com/v1/audio/speech',
       {
         model: "tts-1",
-        voice: "alloy", // Options: alloy, echo, fable, onyx, nova, shimmer
+        voice: "alloy",
         input: text,
       },
       {
@@ -109,13 +109,12 @@ app.post('/speak', async (req, res) => {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        responseType: 'arraybuffer' // Important: Receive binary data
+        responseType: 'arraybuffer'
       }
     );
 
-    // Convert binary audio to base64 to send safely to React Native
     const audioBase64 = Buffer.from(response.data, 'binary').toString('base64');
-    
+
     console.log('✅ Speech generated successfully');
     res.json({ audio: audioBase64 });
 
