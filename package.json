@@ -4,7 +4,7 @@
   "description": "Vercel-compatible STT & TTS backend service for Linguana using OpenAI",
   "main": "api/health.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node server.local.js",
     "dev": "vercel dev",
     "deploy": "vercel --prod",
     "test": "node test-api.js",
