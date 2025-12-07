@@ -352,9 +352,86 @@ const grantSessionRewards = async (userId, type, sessionId) => {
   }
 };
 
+/**
+ * 5. GRANT AD REWARD
+ * Awards extra chats or interviews for watching ads
+ * Enforces daily limits
+ */
+const grantAdReward = async (userId, rewardType = 'chat') => {
+  console.log('[AD_REWARD] 📺 Granting ad reward:', { userId, rewardType });
+
+  try {
+    const userRef = db.collection('users').doc(userId);
+
+    // Run in transaction to ensure atomic read-modify-write for limits
+    return await db.runTransaction(async (t) => {
+      const doc = await t.get(userRef);
+      if (!doc.exists) throw new Error('User not found');
+
+      const data = doc.data();
+      const today = new Date().toDateString();
+
+      // Get ad stats
+      const adStats = data.adStats || {};
+      const lastAdDate = adStats.lastAdDate ? adStats.lastAdDate.toDate().toDateString() : null;
+
+      // Reset counts if new day
+      let dailyChatAds = adStats.dailyChatAds || 0;
+      let dailyInterviewAds = adStats.dailyInterviewAds || 0;
+
+      if (lastAdDate !== today) {
+        dailyChatAds = 0;
+        dailyInterviewAds = 0;
+      }
+
+      // Define limits
+      const LIMITS = {
+        chat: 5,
+        interview: 3
+      };
+
+      if (rewardType === 'chat') {
+        if (dailyChatAds >= LIMITS.chat) {
+          return { success: false, error: 'Daily chat ad limit reached', limitReached: true };
+        }
+
+        // Grant reward
+        t.update(userRef, {
+          extraChats: admin.firestore.FieldValue.increment(1),
+          'adStats.dailyChatAds': dailyChatAds + 1,
+          'adStats.lastAdDate': admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        return { success: true, message: 'Extra chat granted', newCount: dailyChatAds + 1 };
+
+      } else if (rewardType === 'interview') {
+        if (dailyInterviewAds >= LIMITS.interview) {
+          return { success: false, error: 'Daily interview ad limit reached', limitReached: true };
+        }
+
+        // Grant reward
+        t.update(userRef, {
+          extraInterviews: admin.firestore.FieldValue.increment(1),
+          'adStats.dailyInterviewAds': dailyInterviewAds + 1,
+          'adStats.lastAdDate': admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        return { success: true, message: 'Extra interview granted', newCount: dailyInterviewAds + 1 };
+      } else {
+        return { success: false, error: 'Invalid reward type' };
+      }
+    });
+
+  } catch (error) {
+    console.error('[AD_REWARD] ❌ Error:', error);
+    throw error;
+  }
+};
+
 module.exports = {
   calculateNextReview,
   updateStreak,
   processReviewBatch,
-  grantSessionRewards
+  grantSessionRewards,
+  grantAdReward
 };

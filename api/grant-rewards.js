@@ -1,9 +1,10 @@
 const { extractUserId } = require('../utils/authMiddleware');
-const { grantSessionRewards } = require('../services/gamification');
+const { grantSessionRewards, grantAdReward } = require('../services/gamification');
 
 /**
  * Grant Rewards Endpoint
  * Awards XP and Gems for completing sessions
+ * Awards Extra Chats/Interviews for watching ads
  */
 module.exports = async (req, res) => {
     // CORS headers
@@ -35,17 +36,34 @@ module.exports = async (req, res) => {
         }
 
         // Extract session type and sessionId from request body
-        const { type, sessionId } = req.body;
+        const { type, sessionId, rewardType } = req.body;
 
         if (!type) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Session type is required',
-                expectedValues: 'review, roleplay'
+                expectedValues: 'review, roleplay, ad_reward'
             });
         }
 
+        // Handle Ad Rewards
+        if (type === 'ad_reward') {
+            if (!rewardType) {
+                return res.status(400).json({ error: 'Reward type is required for ad rewards (chat/interview)' });
+            }
+
+            console.log(`🎁 Granting ad reward (${rewardType}) to user: ${userId}`);
+            const result = await grantAdReward(userId, rewardType);
+
+            if (!result.success) {
+                return res.status(400).json(result);
+            }
+
+            return res.status(200).json(result);
+        }
+
+        // Handle Session Rewards (Review/Roleplay)
         if (!sessionId) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Session ID is required to prevent duplicate rewards'
             });
         }
@@ -64,7 +82,7 @@ module.exports = async (req, res) => {
                     message: 'This session has already been rewarded'
                 });
             }
-            
+
             return res.status(400).json({
                 error: result.error || 'Failed to grant rewards'
             });
