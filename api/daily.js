@@ -660,8 +660,9 @@ async function handleSubmitScore(req, res) {
       if (!completed && savedProgress) {
         updateData.savedProgress = savedProgress;
         console.log(`[SAVE-PROGRESS] Saving progress for ${userId}`);
-      } else if (completed) {
-        // Remove saved progress when completed
+      } else {
+        // If completed OR no progress provided (e.g. game over), clear it
+        // This ensures failed attempts don't leave "zombie" progress states
         updateData.savedProgress = admin.firestore.FieldValue.delete();
       }
 
