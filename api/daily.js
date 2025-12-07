@@ -643,14 +643,14 @@ async function handleSubmitScore(req, res) {
         });
       }
 
-      // Update existing incomplete submission
+      // Update existing submission
       const updateData = {
         score,
         completionTime,
         correctAnswers,
         wrongAnswers,
         usedAdContinue,
-        completed,
+        completed, // Ensure this updates the document status
         avatar, // Update avatar
         username: username || undefined, // Update username if provided
         timestamp: FieldValue.serverTimestamp(),
@@ -664,6 +664,11 @@ async function handleSubmitScore(req, res) {
         // If completed OR no progress provided (e.g. game over), clear it
         // This ensures failed attempts don't leave "zombie" progress states
         updateData.savedProgress = admin.firestore.FieldValue.delete();
+      }
+
+      // Explicitly set completed flag if it's true OR if game over (no progress saved)
+      if (completed || (!savedProgress && !completed)) {
+        updateData.completed = true;
       }
 
       await existingDoc.ref.update(updateData);
@@ -680,7 +685,8 @@ async function handleSubmitScore(req, res) {
         correctAnswers,
         wrongAnswers,
         usedAdContinue,
-        completed,
+        // Mark as completed if explicitly completed OR if game over (no saved progress)
+        completed: completed || (!savedProgress && !completed),
         avatar, // Save avatar
         timestamp: FieldValue.serverTimestamp(),
       };
