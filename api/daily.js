@@ -537,15 +537,31 @@ async function handleLeaderboard(req, res) {
     console.log(`[LEADERBOARD] Fetching global leaderboard for ${today}...`);
 
     const snapshot = await query.get();
-    const leaderboard = [];
-    let rank = 1;
 
-    snapshot.forEach(doc => {
+    // Process entries and fetch missing usernames asynchronously
+    const leaderboardData = await Promise.all(snapshot.docs.map(async (doc) => {
       const data = doc.data();
-      leaderboard.push({
-        rank,
+      let username = data.username;
+      let avatar = data.avatar;
+
+      // If username or avatar is missing, try to fetch from user profile
+      if ((!username || !avatar) && data.userId) {
+        try {
+          const userDoc = await db.collection('users').doc(data.userId).get();
+          if (userDoc.exists) {
+            const userData = userDoc.data();
+            if (!username) username = userData.username;
+            if (!avatar) avatar = userData.equippedAvatar;
+          }
+        } catch (err) {
+          console.warn(`[LEADERBOARD] Failed to fetch profile for ${data.userId}`, err);
+        }
+      }
+
+      return {
         userId: data.userId,
         displayName: data.displayName || 'Anonymous',
+        username: username || null,
         score: data.score,
         maxScore: data.maxScore,
         percentage: Math.round((data.score / data.maxScore) * 100),
@@ -553,11 +569,17 @@ async function handleLeaderboard(req, res) {
         correctAnswers: data.correctAnswers,
         wrongAnswers: data.wrongAnswers,
         usedAdContinue: data.usedAdContinue || false,
-        completed: data.completed || false, // Show if they finished all questions
+        completed: data.completed || false,
+        avatar: avatar || null,
         timestamp: data.timestamp,
-      });
-      rank++;
-    });
+      };
+    }));
+
+    // Assign ranks
+    const leaderboard = leaderboardData.map((entry, index) => ({
+      rank: index + 1,
+      ...entry
+    }));
 
     console.log(`[LEADERBOARD] Found ${leaderboard.length} entries`);
 
@@ -581,6 +603,7 @@ async function handleSubmitScore(req, res) {
     const {
       userId,
       displayName,
+      username, // New: username for leaderboard display
       score,
       maxScore,
       completionTime,
@@ -588,7 +611,8 @@ async function handleSubmitScore(req, res) {
       wrongAnswers,
       usedAdContinue = false, // Whether user watched ad to continue after 3 mistakes
       completed = false, // Whether user finished all questions
-      savedProgress = null // Progress data for resuming (if not completed)
+      savedProgress = null, // Progress data for resuming (if not completed)
+      avatar = null // User's equipped avatar
     } = req.body;
 
     if (!userId || score === undefined || !maxScore) {
@@ -627,6 +651,8 @@ async function handleSubmitScore(req, res) {
         wrongAnswers,
         usedAdContinue,
         completed,
+        avatar, // Update avatar
+        username: username || undefined, // Update username if provided
         timestamp: FieldValue.serverTimestamp(),
       };
 
@@ -645,6 +671,7 @@ async function handleSubmitScore(req, res) {
       const newSubmission = {
         userId,
         displayName: displayName || 'Anonymous',
+        username: username || null, // Username for leaderboard
         date: today,
         score,
         maxScore,
@@ -653,6 +680,7 @@ async function handleSubmitScore(req, res) {
         wrongAnswers,
         usedAdContinue,
         completed,
+        avatar, // Save avatar
         timestamp: FieldValue.serverTimestamp(),
       };
 
