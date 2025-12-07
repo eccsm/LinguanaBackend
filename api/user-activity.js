@@ -17,7 +17,17 @@ module.exports = async (req, res) => {
         return res.status(200).end();
     }
 
-    // Check client secret if configured
+    // Handle Health Check (GET) - No auth required
+    if (req.method === 'GET') {
+        return res.status(200).json({
+            status: 'ok',
+            service: 'Linguana Backend Service (Vercel)',
+            timestamp: new Date().toISOString(),
+            endpoint: 'user-activity'
+        });
+    }
+
+    // Check client secret if configured (Only for POST)
     const clientSecret = req.headers['x-client-secret'];
     if (process.env.APP_CLIENT_SECRET && clientSecret !== process.env.APP_CLIENT_SECRET) {
         return res.status(401).json({ error: 'Unauthorized' });

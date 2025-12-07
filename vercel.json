@@ -3,7 +3,11 @@
     "routes": [
         {
             "src": "/",
-            "dest": "/api/health"
+            "dest": "/api/user-activity"
+        },
+        {
+            "src": "/create-profile",
+            "dest": "/api/create-profile"
         },
         {
             "src": "/transcribe",
