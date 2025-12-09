@@ -31,24 +31,27 @@ async function generateWeeklyPuzzleWords() {
         const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
         if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing');
 
-        console.log('[WEEKLY-PUZZLE] Generating puzzle words...');
-        const prompt = `Generate a word puzzle for a game like Wordscapes.
+        console.log('[WEEKLY-PUZZLE] Generating MIXED-LANGUAGE puzzle words...');
+        const prompt = `Generate a multilingual Wordscapes-style crossword puzzle.
 Requirements:
-1. Choose 6 DIFFERENT letters that can form many English words
-2. At least one vowel (A, E, I, O, U)
-3. Common letters work better (E, A, R, S, T, N, etc.)
-4. Generate 12-15 valid English words that can be made from ONLY these 6 letters
-5. Words must be 3-7 letters long
-6. Each letter can only be used ONCE per word
-7. Only common, appropriate words (no slang, no offensive)
+1. Pick a 6-7 letter "root word" (e.g. "LISTEN", "BANANA") in English, Spanish, French, German, Italian, Portuguese, or Turkish.
+2. The "letters" pool must be the scrambled letters of this root word.
+3. Find 10-15 valid words that can be formed using ONLY the letters in the pool.
+4. **CRITICAL:** The words can be from ANY of these languages: English, Spanish, French, German, Italian, Portuguese, Turkish. Mix them up!
+5. Arrange these words into a connected crossword grid (max 8x10).
+6. Words must be 3-7 letters long.
+7. No slang, no offensive words.
+
 Return JSON format ONLY:
 {
   "letters": ["S", "T", "E", "P", "S", "E"],
   "words": [
-    {"word": "STEP", "points": 10},
-    {"word": "PEST", "points": 10}
+    {"word": "STEPS", "lang": "en", "row": 4, "col": 2, "direction": "H", "points": 10},
+    {"word": "HOLA", "lang": "es", "row": 2, "col": 4, "direction": "V", "points": 5},
+    {"word": "EVET", "lang": "tr", "row": 5, "col": 5, "direction": "H", "points": 8}
   ]
-}`;
+}
+Note: "direction" should be "H" (Horizontal) or "V" (Vertical). Row/Col are 0-indexed.`;
 
         const response = await axios.post(
             'https://api.openai.com/v1/chat/completions',
@@ -76,9 +79,13 @@ Return JSON format ONLY:
 
         const puzzle = JSON.parse(jsonMatch[0]);
 
-        puzzle.letters = puzzle.letters.map(l => latinize(l).charAt(0));
+        puzzle.letters = puzzle.letters.map(l => latinize(l).charAt(0).toUpperCase());
         puzzle.words = puzzle.words.map(w => ({
-            word: latinize(w.word),
+            word: latinize(w.word).toUpperCase(),
+            lang: w.lang || 'en',
+            row: w.row,
+            col: w.col,
+            direction: w.direction,
             points: w.points || (w.word.length <= 3 ? 8 : w.word.length <= 4 ? 10 : w.word.length <= 5 ? 15 : 25)
         }));
 
@@ -92,108 +99,57 @@ Return JSON format ONLY:
 async function handleWeeklyChallenge(req, res) {
     try {
         const { userId } = req.query;
-        const puzzleDate = getCurrentPuzzleId();
+
+        if (!userId) return res.status(400).json({ error: 'Missing userId' });
+
+        const today = new Date();
+        // Calculate start of the week (Monday)
+        const day = today.getDay();
+        const diff = today.getDate() - day + (day === 0 ? -6 : 1); // adjust when day is sunday
+        const monday = new Date(today.setDate(diff));
+        const puzzleDate = monday.toISOString().split('T')[0];
+
+        // Single global cache key for everyone
+        const puzzleId = puzzleDate;
+
         const db = admin.firestore();
+        const puzzleRef = db.collection('weeklyPuzzleCache').doc(puzzleId);
+        const puzzleDoc = await puzzleRef.get();
 
-        const cacheRef = db.collection('weeklyPuzzleCache').doc(puzzleDate);
-        let puzzleData = (await cacheRef.get()).data();
+        let puzzleData;
 
-        if (!puzzleData) {
-            const puzzle = await generateWeeklyPuzzleWords();
+        if (puzzleDoc.exists) {
+            puzzleData = puzzleDoc.data();
+        } else {
+            // Generate new mixed-language puzzle
+            const generated = await generateWeeklyPuzzleWords();
             puzzleData = {
                 puzzleDate,
-                letters: puzzle.letters,
-                words: puzzle.words,
-                totalPoints: puzzle.words.reduce((sum, w) => sum + w.points, 0),
-                generatedAt: FieldValue.serverTimestamp(),
+                ...generated,
+                totalPoints: generated.words.reduce((sum, w) => sum + w.points, 0),
+                generatedAt: FieldValue.serverTimestamp()
             };
-            await cacheRef.set(puzzleData);
+            await puzzleRef.set(puzzleData);
         }
 
-        let userProgress = null;
-        if (userId) {
-            const progressRef = db.collection('weeklyPuzzleScores').doc(`${puzzleDate}_${userId}`);
-            const progressDoc = await progressRef.get();
-            if (progressDoc.exists) userProgress = progressDoc.data();
-        }
+        // Get user progress
+        const progressRef = db.collection('users').doc(userId).collection('weeklyProgress').doc(puzzleId);
+        const progressDoc = await progressRef.get();
+        const userProgress = progressDoc.exists ? progressDoc.data() : { foundWords: [], score: 0, completed: false };
 
-        return res.status(200).json({
+        res.json({
             success: true,
-            puzzleDate,
+            puzzleId,
             letters: puzzleData.letters,
             wordCount: puzzleData.words.length,
-            totalPoints: puzzleData.totalPoints,
+            words: puzzleData.words, // Send full words with grid info
             config: WEEKLY_PUZZLE_CONFIG,
-            userProgress: userProgress ? {
-                foundWords: userProgress.foundWords || [],
-                score: userProgress.score || 0,
-                hintsUsed: userProgress.hintsUsed || 0,
-                completed: userProgress.completed || false,
-            } : null,
+            userProgress
         });
+
     } catch (error) {
-        console.error('[WEEKLY-CHALLENGE] Error:', error);
-        return res.status(500).json({ success: false, error: error.message });
-    }
-}
-
-async function handleWeeklySubmitWord(req, res) {
-    try {
-        const { userId, word } = req.body;
-        const puzzleDate = getCurrentPuzzleId();
-        const db = admin.firestore();
-
-        if (!userId || !word) return res.status(400).json({ success: false, error: 'Missing userId or word' });
-
-        const guessWord = latinize(word);
-        const cacheRef = db.collection('weeklyPuzzleCache').doc(puzzleDate);
-        const puzzleDoc = await cacheRef.get();
-
-        if (!puzzleDoc.exists) return res.status(404).json({ success: false, error: 'Puzzle not found' });
-
-        const puzzle = puzzleDoc.data();
-        const validWord = puzzle.words.find(w => w.word === guessWord);
-
-        if (!validWord) return res.status(200).json({ success: true, valid: false, message: 'Word not in puzzle' });
-
-        const progressRef = db.collection('weeklyPuzzleScores').doc(`${puzzleDate}_${userId}`);
-        const progressDoc = await progressRef.get();
-        let progress = progressDoc.exists ? progressDoc.data() : null;
-
-        if (!progress) {
-            const userDoc = await db.collection('users').doc(userId).get();
-            const userData = userDoc.exists ? userDoc.data() : {};
-            progress = {
-                puzzleDate, userId,
-                displayName: userData.displayName || userData.username || 'Anonymous',
-                avatar: userData.equippedAvatar || null,
-                foundWords: [], score: 0, hintsUsed: 0, completed: false,
-                startedAt: FieldValue.serverTimestamp(),
-            };
-        }
-
-        if (progress.foundWords.includes(guessWord)) {
-            return res.status(200).json({ success: true, valid: true, alreadyFound: true });
-        }
-
-        progress.foundWords.push(guessWord);
-        progress.score += validWord.points;
-        progress.completed = progress.foundWords.length >= puzzle.words.length;
-
-        if (progress.completed && !progress.completedAt) {
-            progress.completedAt = FieldValue.serverTimestamp();
-        }
-
-        await progressRef.set(progress, { merge: true });
-
-        return res.status(200).json({
-            success: true, valid: true, word: guessWord, points: validWord.points,
-            totalScore: progress.score, wordsFound: progress.foundWords.length,
-            totalWords: puzzle.words.length, completed: progress.completed,
-        });
-    } catch (error) {
-        console.error('[WEEKLY-SUBMIT] Error:', error);
-        return res.status(500).json({ success: false, error: error.message });
+        console.error('Weekly challenge error:', error);
+        res.status(500).json({ error: error.message });
     }
 }
 
