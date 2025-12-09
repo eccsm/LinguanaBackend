@@ -15,7 +15,12 @@ const WEEKLY_PUZZLE_CONFIG = {
 };
 
 function getCurrentPuzzleId() {
-    return new Date().toISOString().split('T')[0];
+    const today = new Date();
+    // Calculate start of the week (Monday) - same as handleWeeklyChallenge
+    const day = today.getDay();
+    const diff = today.getDate() - day + (day === 0 ? -6 : 1); // adjust when day is sunday
+    const monday = new Date(today.setDate(diff));
+    return monday.toISOString().split('T')[0];
 }
 
 function latinize(text) {
@@ -41,6 +46,11 @@ async function handleWeeklySubmitWord(req, res) {
         if (!puzzleDoc.exists) return res.status(404).json({ success: false, error: 'Puzzle not found' });
 
         const puzzle = puzzleDoc.data();
+
+        // Debug logging
+        console.log('[WEEKLY-SUBMIT] Looking for word:', guessWord);
+        console.log('[WEEKLY-SUBMIT] Puzzle words:', puzzle.words.map(w => `${w.word} -> ${latinize(w.word)}`));
+
         const validWord = puzzle.words.find(w => latinize(w.word) === guessWord);
 
         if (!validWord) return res.status(200).json({ success: true, valid: false, message: 'Word not in puzzle' });
@@ -149,6 +159,46 @@ Note: "direction" should be "H" (Horizontal) or "V" (Vertical). Row/Col are 0-in
             points: w.points || (w.word.length <= 3 ? 8 : w.word.length <= 4 ? 10 : w.word.length <= 5 ? 15 : 25)
         }));
 
+        // Validate grid - ensure no conflicting letters at overlapping cells
+        const validatedWords = [];
+        const occupiedCells = {}; // key: "row,col" -> letter
+
+        for (const w of puzzle.words) {
+            let r = w.row;
+            let c = w.col;
+            const isHoriz = w.direction === 'H';
+            let isValid = true;
+
+            // Check if this word conflicts with existing cells
+            for (let i = 0; i < w.word.length; i++) {
+                const key = `${r},${c}`;
+                const letter = w.word[i];
+
+                if (occupiedCells[key] && occupiedCells[key] !== letter) {
+                    console.log(`[PUZZLE-VALIDATE] Conflict at ${key}: existing=${occupiedCells[key]}, new=${letter} from word ${w.word}`);
+                    isValid = false;
+                    break;
+                }
+
+                if (isHoriz) c++; else r++;
+            }
+
+            if (isValid) {
+                // Mark cells as occupied
+                r = w.row;
+                c = w.col;
+                for (let i = 0; i < w.word.length; i++) {
+                    const key = `${r},${c}`;
+                    occupiedCells[key] = w.word[i];
+                    if (isHoriz) c++; else r++;
+                }
+                validatedWords.push(w);
+            }
+        }
+
+        console.log(`[PUZZLE-VALIDATE] Valid words: ${validatedWords.length}/${puzzle.words.length}`);
+        puzzle.words = validatedWords;
+
         return puzzle;
     } catch (error) {
         console.error('[WEEKLY-PUZZLE] Error:', error.message);
@@ -192,8 +242,8 @@ async function handleWeeklyChallenge(req, res) {
             await puzzleRef.set(puzzleData);
         }
 
-        // Get user progress
-        const progressRef = db.collection('users').doc(userId).collection('weeklyProgress').doc(puzzleId);
+        // Get user progress - must match where handleWeeklySubmitWord saves
+        const progressRef = db.collection('weeklyPuzzleScores').doc(`${puzzleId}_${userId}`);
         const progressDoc = await progressRef.get();
         const userProgress = progressDoc.exists ? progressDoc.data() : { foundWords: [], score: 0, completed: false };
 
