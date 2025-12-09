@@ -295,25 +295,27 @@ function generateLetterOptions(correctLetter, rng) {
 }
 
 // Generate universal multi-language words using OpenAI
-async function generateUniversalWordsWithOpenAI(theme, retryCount = 0) {
+async function generateUniversalWordsWithOpenAI(theme, existingWords = [], retryCount = 0) {
+  const needed = 15 - existingWords.length;
+
+  if (needed <= 0) {
+    return existingWords.slice(0, 15);
+  }
+
   try {
-    console.log(`[OPENAI] Generating universal multi-language words - Theme: ${theme}${retryCount > 0 ? ` (retry ${retryCount})` : ''}`);
+    console.log(`[OPENAI] Generating ${needed} words - Theme: ${theme}${retryCount > 0 ? ` (retry ${retryCount})` : ''}`);
 
-    const languageList = ALL_LANGUAGES.map(l => l.name).join(', ');
-
-    const prompt = `Generate a JSON array of EXACTLY 15 vocabulary words for a daily language challenge.
+    const prompt = `Generate a JSON array of EXACTLY ${needed} vocabulary words for a daily language challenge.
 
 Theme: ${theme}
 
-CRITICAL: You MUST return EXACTLY 15 words, no more, no less. Count carefully before responding.
-
 Requirements:
-1. Each word from a DIFFERENT source language (mix: Spanish, French, German, Turkish, Arabic, Hindi, English, Italian, Portuguese, Russian, Japanese, Chinese, Korean)
-2. Use at least 10 different languages
-3. Difficulty distribution: 8 words level-1, 5 words level-2, 2 words level-3
-4. Common, practical vocabulary relevant to "${theme}"
+1. Each word from a DIFFERENT source language (Spanish, French, German, Turkish, Arabic, Hindi, English, Italian, Portuguese, Russian, Japanese, Chinese, Korean)
+2. Use at least ${Math.min(needed, 10)} different languages
+3. Difficulty: mostly level-1 (beginner), some level-2
+4. Common, practical vocabulary for "${theme}"
 
-JSON format (return ONLY this, no explanation):
+JSON format (return ONLY valid JSON, no explanation):
 [
   {
     "word": "Restaurante",
@@ -327,23 +329,17 @@ JSON format (return ONLY this, no explanation):
   }
 ]
 
-REMINDER: Return EXACTLY 15 words. Not 13, not 14, not 16. EXACTLY 15.`;
+Return EXACTLY ${needed} words.`;
 
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
         model: 'gpt-4o-mini',
         messages: [
-          {
-            role: 'system',
-            content: 'You are a multilingual vocabulary generator. Return ONLY valid JSON arrays with EXACTLY 15 items. Count your items before responding.'
-          },
-          {
-            role: 'user',
-            content: prompt
-          }
+          { role: 'system', content: `Return ONLY valid JSON arrays with EXACTLY ${needed} items.` },
+          { role: 'user', content: prompt }
         ],
-        temperature: 0.7,
+        temperature: 0.8,
         max_tokens: 4000,
       },
       {
@@ -355,34 +351,62 @@ REMINDER: Return EXACTLY 15 words. Not 13, not 14, not 16. EXACTLY 15.`;
     );
 
     const content = response.data.choices[0].message.content.trim();
-
-    // Extract JSON from response (remove markdown code blocks if present)
     const jsonMatch = content.match(/\[\s*\{[\s\S]*\}\s*\]/);
+
     if (!jsonMatch) {
       throw new Error('Failed to extract JSON from OpenAI response');
     }
 
-    const words = JSON.parse(jsonMatch[0]);
+    const newWords = JSON.parse(jsonMatch[0]);
+    const combined = [...existingWords, ...newWords];
 
-    // Retry if we don't have exactly 15 words (max 2 retries)
-    if (words.length < 15 && retryCount < 2) {
-      console.warn(`[OPENAI] Got ${words.length} words, need 15. Retrying...`);
-      return generateUniversalWordsWithOpenAI(theme, retryCount + 1);
+    console.log(`[OPENAI] Got ${newWords.length} words, total: ${combined.length}/15`);
+
+    // If still short and retries left, try again with accumulated words
+    if (combined.length < 15 && retryCount < 2) {
+      return generateUniversalWordsWithOpenAI(theme, combined, retryCount + 1);
     }
 
-    // If we have more than 15, just take first 15
-    if (words.length > 15) {
-      console.log(`[OPENAI] Got ${words.length} words, trimming to 15`);
-      return words.slice(0, 15);
+    // If still short after retries, pad with fallback words
+    if (combined.length < 15) {
+      console.log(`[OPENAI] Padding with ${15 - combined.length} fallback words`);
+      const fallback = getFallbackWords(theme, 15 - combined.length, combined);
+      return [...combined, ...fallback].slice(0, 15);
     }
 
-    console.log(`[OPENAI] Successfully generated ${words.length} multi-language words`);
-    return words;
+    return combined.slice(0, 15);
 
   } catch (error) {
-    console.error('[OPENAI] Error generating words:', error.message);
+    console.error('[OPENAI] Error:', error.message);
+
+    // If we have some words, pad with fallback
+    if (existingWords.length > 0) {
+      console.log(`[OPENAI] Using ${existingWords.length} existing + fallback words`);
+      const fallback = getFallbackWords(theme, 15 - existingWords.length, existingWords);
+      return [...existingWords, ...fallback].slice(0, 15);
+    }
+
     throw error;
   }
+}
+
+// Get fallback words to fill gaps
+function getFallbackWords(theme, count, existingWords = []) {
+  const existingWordTexts = new Set(existingWords.map(w => w.word.toLowerCase()));
+  const allFallback = [];
+
+  // Collect words from all language pools
+  Object.entries(WORD_POOLS).forEach(([lang, words]) => {
+    words.forEach(w => {
+      if (!existingWordTexts.has(w.word.toLowerCase())) {
+        allFallback.push({ ...w, language: lang });
+      }
+    });
+  });
+
+  // Shuffle and take what we need
+  const shuffled = allFallback.sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, count);
 }
 
 // Get or generate today's universal word pool (same for everyone)
