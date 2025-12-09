@@ -37,6 +37,7 @@ const dailyChallenge = require('./api/daily-challenge');
 app.get('/daily/challenge', dailyChallenge.handleChallenge);
 app.post('/daily/submit', dailyChallenge.handleSubmitScore);
 app.get('/daily/reminder', dailyChallenge.handleDailyChallengeReminder);
+app.get('/daily/generate', dailyChallenge.handleGenerateDailyChallenge);
 
 // Weekly Challenge Routes
 const weeklyChallenge = require('./api/weekly-challenge');

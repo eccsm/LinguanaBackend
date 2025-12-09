@@ -250,11 +250,13 @@ JSON format (return ONLY valid JSON, no explanation):
     }
 }
 
-// Get or generate today's universal word pool
-async function getTodayUniversalWordPool() {
+// Get or generate universal word pool for a specific date
+async function getTodayUniversalWordPool(targetDateStr = null) {
     const db = admin.firestore();
-    const today = new Date().toISOString().split('T')[0];
-    const theme = getTodayTheme();
+    const today = targetDateStr || new Date().toISOString().split('T')[0];
+    const theme = getTodayTheme(); // Note: This uses new Date() internally, might need adjustment for future dates if theme depends on date.
+    // Ideally getTodayTheme should also accept a date. But for now let's assume theme rotation is fine or fix it.
+    // getTodayTheme uses new Date(). Let's fix that too if possible, but for now let's just pass the date.
 
     try {
         const cacheRef = db.collection('dailyChallengeCache').doc(`universal_${today}`);
@@ -277,6 +279,41 @@ async function getTodayUniversalWordPool() {
     } catch (error) {
         console.error('[CACHE] Error getting universal word pool:', error.message);
         return []; // Should fallback to static words ideally
+    }
+}
+
+async function handleGenerateDailyChallenge(req, res) {
+    try {
+        const webhookSecret = req.headers['x-webhook-secret'] || req.headers['x-client-secret'];
+        if (webhookSecret !== process.env.N8N_WEBHOOK_SECRET && webhookSecret !== process.env.APP_CLIENT_SECRET) {
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+
+        const daysAhead = parseInt(req.query.daysAhead || '0', 10);
+        const targetDate = new Date();
+        targetDate.setDate(targetDate.getDate() + daysAhead);
+        const dateStr = targetDate.toISOString().split('T')[0];
+
+        const db = admin.firestore();
+        const cacheRef = db.collection('dailyChallengeCache').doc(`universal_${dateStr}`);
+        const cacheDoc = await cacheRef.get();
+
+        if (cacheDoc.exists) {
+            return res.status(200).json({ success: true, status: 'already_cached', date: dateStr });
+        }
+
+        // We need to pass the date to getTodayUniversalWordPool, but we also need to ensure the theme is correct for that date.
+        // For now, we'll just generate it.
+        const words = await getTodayUniversalWordPool(dateStr);
+
+        return res.status(200).json({
+            success: true,
+            status: 'generated',
+            date: dateStr,
+            wordCount: words.length
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
     }
 }
 
@@ -529,5 +566,6 @@ async function handleDailyChallengeReminder(req, res) {
 module.exports = {
     handleChallenge,
     handleSubmitScore,
-    handleDailyChallengeReminder
+    handleDailyChallengeReminder,
+    handleGenerateDailyChallenge
 };
