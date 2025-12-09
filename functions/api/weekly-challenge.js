@@ -3,7 +3,7 @@ const admin = initializeFirebase();
 const { FieldValue } = require('firebase-admin/firestore');
 const axios = require('axios');
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
 
 // Weekly puzzle settings
 const WEEKLY_PUZZLE_CONFIG = {
@@ -28,6 +28,9 @@ function latinize(text) {
 
 async function generateWeeklyPuzzleWords() {
     try {
+        const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+        if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing');
+
         console.log('[WEEKLY-PUZZLE] Generating puzzle words...');
         const prompt = `Generate a word puzzle for a game like Wordscapes.
 Requirements:

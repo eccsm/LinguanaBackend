@@ -3,7 +3,7 @@ const admin = initializeFirebase();
 const { FieldValue } = require('firebase-admin/firestore');
 const axios = require('axios');
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
 
 // Supported languages for the universal daily challenge
 const ALL_LANGUAGES = [
@@ -176,6 +176,9 @@ async function generateUniversalWordsWithOpenAI(theme, existingWords = [], retry
     if (needed <= 0) return existingWords.slice(0, 15);
 
     try {
+        const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+        if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing');
+
         console.log(`[OPENAI] Generating ${needed} words - Theme: ${theme}`);
 
         const prompt = `Generate a JSON array of EXACTLY ${needed} vocabulary words for a daily language challenge.
@@ -284,7 +287,7 @@ async function handleChallenge(req, res) {
         const { nativeLanguage = 'en', userId } = req.query;
         const today = new Date().toISOString().split('T')[0];
 
-        if (userId) {
+        if (userId && userId !== 'guest' && userId !== 'undefined') {
             const db = admin.firestore();
             const existingScoreQuery = await db.collection('dailyChallengeScores')
                 .where('userId', '==', userId)
@@ -350,6 +353,16 @@ async function handleSubmitScore(req, res) {
 
         if (!userId || score === undefined || !maxScore) {
             return res.status(400).json({ success: false, error: 'Missing required fields' });
+        }
+
+        // Skip saving for guests to prevent collisions
+        if (userId === 'guest' || userId === 'undefined') {
+            return res.status(200).json({
+                success: true,
+                message: 'Guest score processed (not saved)',
+                score: { current: score, max: maxScore, percentage: Math.round((score / maxScore) * 100) },
+                completed,
+            });
         }
 
         const db = admin.firestore();

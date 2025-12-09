@@ -1,3 +1,4 @@
+require('dotenv').config();
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const express = require('express');
@@ -63,4 +64,7 @@ app.all('/grant-rewards', wrapHandler('./api/grant-rewards'));
 app.all('/app-ads', wrapHandler('./api/app-ads'));
 
 // Export the Express app as a Cloud Function named 'api'
-exports.api = functions.https.onRequest(app);
+const { onRequest } = require('firebase-functions/v2/https');
+
+// Export the Express app as a Cloud Function named 'api'
+exports.api = onRequest({ cors: true, invoker: 'public' }, app);
