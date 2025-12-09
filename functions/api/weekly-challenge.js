@@ -26,6 +26,66 @@ function latinize(text) {
         .toUpperCase();
 }
 
+async function handleWeeklySubmitWord(req, res) {
+    try {
+        const { userId, word } = req.body;
+        const puzzleDate = getCurrentPuzzleId();
+        const db = admin.firestore();
+
+        if (!userId || !word) return res.status(400).json({ success: false, error: 'Missing userId or word' });
+
+        const guessWord = latinize(word);
+        const cacheRef = db.collection('weeklyPuzzleCache').doc(puzzleDate);
+        const puzzleDoc = await cacheRef.get();
+
+        if (!puzzleDoc.exists) return res.status(404).json({ success: false, error: 'Puzzle not found' });
+
+        const puzzle = puzzleDoc.data();
+        const validWord = puzzle.words.find(w => latinize(w.word) === guessWord);
+
+        if (!validWord) return res.status(200).json({ success: true, valid: false, message: 'Word not in puzzle' });
+
+        const progressRef = db.collection('weeklyPuzzleScores').doc(`${puzzleDate}_${userId}`);
+        const progressDoc = await progressRef.get();
+        let progress = progressDoc.exists ? progressDoc.data() : null;
+
+        if (!progress) {
+            const userDoc = await db.collection('users').doc(userId).get();
+            const userData = userDoc.exists ? userDoc.data() : {};
+            progress = {
+                puzzleDate, userId,
+                displayName: userData.displayName || userData.username || 'Anonymous',
+                avatar: userData.equippedAvatar || null,
+                foundWords: [], score: 0, hintsUsed: 0, completed: false,
+                startedAt: FieldValue.serverTimestamp(),
+            };
+        }
+
+        if (progress.foundWords.includes(guessWord)) {
+            return res.status(200).json({ success: true, valid: true, alreadyFound: true });
+        }
+
+        progress.foundWords.push(guessWord);
+        progress.score += validWord.points;
+        progress.completed = progress.foundWords.length >= puzzle.words.length;
+
+        if (progress.completed && !progress.completedAt) {
+            progress.completedAt = FieldValue.serverTimestamp();
+        }
+
+        await progressRef.set(progress, { merge: true });
+
+        return res.status(200).json({
+            success: true, valid: true, word: guessWord, points: validWord.points,
+            totalScore: progress.score, wordsFound: progress.foundWords.length,
+            totalWords: puzzle.words.length, completed: progress.completed,
+        });
+    } catch (error) {
+        console.error('[WEEKLY-SUBMIT] Error:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+}
+
 async function generateWeeklyPuzzleWords() {
     try {
         const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
