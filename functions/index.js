@@ -36,8 +36,8 @@ const wrapHandler = (handlerPath) => {
 const dailyChallenge = require('./api/daily-challenge');
 app.get('/daily/challenge', dailyChallenge.handleChallenge);
 app.post('/daily/submit', dailyChallenge.handleSubmitScore);
-app.get('/daily/reminder', dailyChallenge.handleDailyChallengeReminder);
-app.get('/daily/generate', dailyChallenge.handleGenerateDailyChallenge);
+app.all('/daily/reminder', dailyChallenge.handleDailyChallengeReminder);  // GET or POST for n8n
+app.all('/daily/generate', dailyChallenge.handleGenerateDailyChallenge);  // GET or POST for n8n
 
 // Weekly Challenge Routes
 const weeklyChallenge = require('./api/weekly-challenge');
@@ -50,7 +50,7 @@ app.get('/weekly/generate', weeklyChallenge.handleGenerateWordPuzzle);
 // Leaderboard Routes
 const leaderboard = require('./api/leaderboard');
 app.get('/daily/leaderboard', leaderboard.handleLeaderboard);
-app.get('/daily/award-winner', leaderboard.handleAwardWinner);
+app.all('/daily/award-winner', leaderboard.handleAwardWinner);  // GET or POST for n8n
 
 // Other Routes
 app.all('/chat', wrapHandler('./api/chat'));

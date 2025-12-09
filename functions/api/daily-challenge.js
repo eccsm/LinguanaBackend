@@ -529,36 +529,72 @@ async function handleDailyChallengeReminder(req, res) {
             return res.status(401).json({ success: false, error: 'Unauthorized' });
         }
 
+        const reminderType = req.query.type || req.body?.type || 'challenge'; // 'challenge' or 'streak'
         const db = admin.firestore();
         const today = new Date().toISOString().split('T')[0];
-
-        const completionsQuery = await db.collection('dailyChallengeScores')
-            .where('date', '==', today)
-            .where('completed', '==', true)
-            .get();
-
-        const completedUserIds = new Set(completionsQuery.docs.map(d => d.data().userId));
-        const usersQuery = await db.collection('users').limit(500).get();
         const results = { sent: 0, skipped: 0, failed: 0, noToken: 0 };
 
-        for (const doc of usersQuery.docs) {
-            const user = doc.data();
-            if (!user.fcmToken) { results.noToken++; continue; }
-            if (completedUserIds.has(doc.id)) { results.skipped++; continue; }
+        if (reminderType === 'streak') {
+            // STREAK REMINDER: Notify users with active streaks who haven't practiced today
+            const usersQuery = await db.collection('users')
+                .where('currentStreak', '>', 0)
+                .limit(500)
+                .get();
 
-            try {
-                await admin.messaging().send({
-                    notification: { title: 'Daily Challenge', body: 'Don\'t forget your daily challenge!' },
-                    token: user.fcmToken,
-                });
-                results.sent++;
-            } catch (error) {
-                results.failed++;
+            for (const doc of usersQuery.docs) {
+                const user = doc.data();
+                if (!user.fcmToken) { results.noToken++; continue; }
+
+                // Check if they practiced today
+                const lastPractice = user.lastPracticeDate?.toDate?.()?.toISOString?.()?.split('T')[0] || user.lastPracticeDate;
+                if (lastPractice === today) { results.skipped++; continue; }
+
+                try {
+                    await admin.messaging().send({
+                        notification: {
+                            title: '🔥 Keep Your Streak!',
+                            body: `You have a ${user.currentStreak}-day streak! Don't lose it today!`
+                        },
+                        token: user.fcmToken,
+                    });
+                    results.sent++;
+                } catch (error) {
+                    results.failed++;
+                }
+            }
+        } else {
+            // CHALLENGE REMINDER: Notify users who haven't completed daily challenge
+            const completionsQuery = await db.collection('dailyChallengeScores')
+                .where('date', '==', today)
+                .where('completed', '==', true)
+                .get();
+
+            const completedUserIds = new Set(completionsQuery.docs.map(d => d.data().userId));
+            const usersQuery = await db.collection('users').limit(500).get();
+
+            for (const doc of usersQuery.docs) {
+                const user = doc.data();
+                if (!user.fcmToken) { results.noToken++; continue; }
+                if (completedUserIds.has(doc.id)) { results.skipped++; continue; }
+
+                try {
+                    await admin.messaging().send({
+                        notification: {
+                            title: '🎮 Daily Challenge Ready!',
+                            body: 'Your daily word match game is waiting for you!'
+                        },
+                        token: user.fcmToken,
+                    });
+                    results.sent++;
+                } catch (error) {
+                    results.failed++;
+                }
             }
         }
 
-        return res.status(200).json({ success: true, results });
+        return res.status(200).json({ success: true, type: reminderType, results });
     } catch (error) {
+        console.error('[REMINDER] Error:', error);
         return res.status(500).json({ success: false, error: error.message });
     }
 }
