@@ -279,7 +279,7 @@ const grantSessionRewards = async (userId, type, sessionId) => {
     const rewards = {
       review: {
         xp: 10,
-        gems: 5,
+        gems: 0,
         description: 'Vocabulary Review'
       },
       roleplay: {
