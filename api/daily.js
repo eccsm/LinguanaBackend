@@ -295,57 +295,39 @@ function generateLetterOptions(correctLetter, rng) {
 }
 
 // Generate universal multi-language words using OpenAI
-async function generateUniversalWordsWithOpenAI(theme) {
+async function generateUniversalWordsWithOpenAI(theme, retryCount = 0) {
   try {
-    console.log(`[OPENAI] Generating universal multi-language words - Theme: ${theme}`);
+    console.log(`[OPENAI] Generating universal multi-language words - Theme: ${theme}${retryCount > 0 ? ` (retry ${retryCount})` : ''}`);
 
     const languageList = ALL_LANGUAGES.map(l => l.name).join(', ');
 
-    const prompt = `Generate a JSON array of exactly 15 vocabulary words from DIFFERENT languages for a universal daily language challenge.
+    const prompt = `Generate a JSON array of EXACTLY 15 vocabulary words for a daily language challenge.
 
 Theme: ${theme}
 
-Languages to use (mix them): ${languageList}
-
-For each word, provide:
-- The word in its original language (choose from: Spanish, French, German, Turkish, Arabic, Hindi, English, Italian, Portuguese, Russian, Japanese, Chinese, Korean)
-- The language code (es, fr, de, tr, ar, hi, en, it, pt, ru, ja, zh, ko)
-- Translations to ALL these languages
-- A difficulty level (1=beginner, 2=intermediate, 3=advanced)
+CRITICAL: You MUST return EXACTLY 15 words, no more, no less. Count carefully before responding.
 
 Requirements:
-- Use words from at least 10 DIFFERENT languages
-- Mix of difficulty levels (8 level-1, 5 level-2, 2 level-3)
-- Common, practical vocabulary
-- Relevant to the theme
-- Appropriate for language learners
+1. Each word from a DIFFERENT source language (mix: Spanish, French, German, Turkish, Arabic, Hindi, English, Italian, Portuguese, Russian, Japanese, Chinese, Korean)
+2. Use at least 10 different languages
+3. Difficulty distribution: 8 words level-1, 5 words level-2, 2 words level-3
+4. Common, practical vocabulary relevant to "${theme}"
 
-Format as a JSON array:
+JSON format (return ONLY this, no explanation):
 [
   {
-    "word": "Hola",
+    "word": "Restaurante",
     "language": "es",
     "translations": {
-      "en": "Hello",
-      "es": "Hola",
-      "fr": "Bonjour",
-      "de": "Hallo",
-      "tr": "Merhaba",
-      "ar": "مرحبا",
-      "hi": "नमस्ते",
-      "it": "Ciao",
-      "pt": "Olá",
-      "ru": "Привет",
-      "ja": "こんにちは",
-      "zh": "你好",
-      "ko": "안녕하세요"
+      "en": "Restaurant", "es": "Restaurante", "fr": "Restaurant", "de": "Restaurant",
+      "tr": "Restoran", "ar": "مطعم", "hi": "रेस्टोरेंट", "it": "Ristorante",
+      "pt": "Restaurante", "ru": "Ресторан", "ja": "レストラン", "zh": "餐厅", "ko": "레스토랑"
     },
     "difficulty": 1
-  },
-  ...
+  }
 ]
 
-Return ONLY the JSON array, no explanation.`;
+REMINDER: Return EXACTLY 15 words. Not 13, not 14, not 16. EXACTLY 15.`;
 
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
@@ -354,7 +336,7 @@ Return ONLY the JSON array, no explanation.`;
         messages: [
           {
             role: 'system',
-            content: 'You are a multilingual language learning expert. Generate diverse vocabulary lists from multiple languages as valid JSON arrays only.'
+            content: 'You are a multilingual vocabulary generator. Return ONLY valid JSON arrays with EXACTLY 15 items. Count your items before responding.'
           },
           {
             role: 'user',
@@ -362,7 +344,7 @@ Return ONLY the JSON array, no explanation.`;
           }
         ],
         temperature: 0.7,
-        max_tokens: 3000,
+        max_tokens: 4000,
       },
       {
         headers: {
@@ -382,8 +364,16 @@ Return ONLY the JSON array, no explanation.`;
 
     const words = JSON.parse(jsonMatch[0]);
 
-    if (!Array.isArray(words) || words.length < 15) {
-      console.warn(`[OPENAI] Expected 15 words, got ${words.length}`);
+    // Retry if we don't have exactly 15 words (max 2 retries)
+    if (words.length < 15 && retryCount < 2) {
+      console.warn(`[OPENAI] Got ${words.length} words, need 15. Retrying...`);
+      return generateUniversalWordsWithOpenAI(theme, retryCount + 1);
+    }
+
+    // If we have more than 15, just take first 15
+    if (words.length > 15) {
+      console.log(`[OPENAI] Got ${words.length} words, trimming to 15`);
+      return words.slice(0, 15);
     }
 
     console.log(`[OPENAI] Successfully generated ${words.length} multi-language words`);
@@ -939,6 +929,78 @@ async function handleGenerateWeekly(req, res) {
   }
 }
 
+/**
+ * Generate a SINGLE day's challenge (much faster than weekly)
+ * Called by n8n daily cron job
+ * Query params: ?action=generate-single&daysAhead=7
+ */
+async function handleGenerateSingle(req, res) {
+  try {
+    // Authenticate
+    const webhookSecret = req.headers['x-webhook-secret'] || req.headers['x-client-secret'];
+    if (webhookSecret !== process.env.N8N_WEBHOOK_SECRET && webhookSecret !== process.env.APP_CLIENT_SECRET) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const daysAhead = parseInt(req.query.daysAhead || '7', 10);
+    const db = admin.firestore();
+
+    // Calculate target date
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + daysAhead);
+    const dateStr = targetDate.toISOString().split('T')[0];
+
+    // Get theme for that day
+    const dayOfYear = Math.floor((targetDate - new Date(targetDate.getFullYear(), 0, 0)) / 1000 / 60 / 60 / 24);
+    const theme = THEMES[dayOfYear % THEMES.length];
+
+    console.log(`[GENERATE-SINGLE] Generating for ${dateStr} (${daysAhead} days ahead) - Theme: ${theme}`);
+
+    // Check if already exists
+    const cacheRef = db.collection('dailyChallengeCache').doc(`universal_${dateStr}`);
+    const cacheDoc = await cacheRef.get();
+
+    if (cacheDoc.exists) {
+      console.log(`[GENERATE-SINGLE] ${dateStr} already cached`);
+      return res.status(200).json({
+        success: true,
+        status: 'already_cached',
+        date: dateStr,
+        theme,
+      });
+    }
+
+    // Generate words
+    const words = await generateUniversalWordsWithOpenAI(theme);
+
+    // Cache
+    await cacheRef.set({
+      date: dateStr,
+      theme,
+      words,
+      generatedAt: FieldValue.serverTimestamp(),
+      preGenerated: true,
+    });
+
+    console.log(`[GENERATE-SINGLE] ✅ Generated ${dateStr} (${words.length} words)`);
+
+    return res.status(200).json({
+      success: true,
+      status: 'generated',
+      date: dateStr,
+      theme,
+      wordCount: words.length,
+    });
+
+  } catch (error) {
+    console.error('[GENERATE-SINGLE] Error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
 // ==========================================
 // n8n NOTIFICATION HANDLERS
 // ==========================================
@@ -1176,8 +1238,11 @@ module.exports = async (req, res) => {
     case 'award-winner':
       return handleAwardWinner(req, res);
     case 'generate-weekly':
-      // n8n webhook: Pre-generate a week of challenges
+      // n8n webhook: Pre-generate a week of challenges (slow, may timeout)
       return handleGenerateWeekly(req, res);
+    case 'generate-single':
+      // n8n webhook: Generate ONE day's challenge (fast, ~5-10 seconds)
+      return handleGenerateSingle(req, res);
     // n8n notification webhooks
     case 'streak-reminder':
       return handleStreakReminder(req, res);
@@ -1189,7 +1254,7 @@ module.exports = async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Invalid action',
-        validActions: ['challenge', 'leaderboard', 'submit-score', 'award-winner', 'generate-weekly', 'streak-reminder', 'daily-challenge-reminder', 'send-notification']
+        validActions: ['challenge', 'leaderboard', 'submit-score', 'award-winner', 'generate-weekly', 'generate-single', 'streak-reminder', 'daily-challenge-reminder', 'send-notification']
       });
   }
 };
