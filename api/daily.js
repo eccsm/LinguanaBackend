@@ -944,7 +944,8 @@ async function handleGenerateWeekly(req, res) {
 // ==========================================
 
 /**
- * Send streak reminder to users who haven't practiced today
+ * Send streak reminder to ALL users who haven't practiced today
+ * Personalizes message based on their streak length
  * Called by n8n cron job (e.g., 8 PM daily)
  */
 async function handleStreakReminder(req, res) {
@@ -955,15 +956,14 @@ async function handleStreakReminder(req, res) {
       return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
 
-    const { minStreak = 1 } = req.body || {};
     const db = admin.firestore();
     const today = new Date().toISOString().split('T')[0];
 
-    console.log(`[STREAK-REMINDER] Sending streak reminders (minStreak: ${minStreak})...`);
+    console.log('[STREAK-REMINDER] Sending personalized streak reminders to all users...');
 
-    // Find users with active streaks who have FCM tokens
+    // Find ALL users with FCM tokens (streak >= 1 means they've practiced at least once)
     const usersQuery = await db.collection('users')
-      .where('currentStreak', '>=', minStreak)
+      .where('currentStreak', '>=', 1)
       .limit(500)
       .get();
 
@@ -984,15 +984,33 @@ async function handleStreakReminder(req, res) {
         continue;
       }
 
+      // Personalize message based on streak length
+      const streak = user.currentStreak;
+      let title, body;
+
+      if (streak >= 30) {
+        title = `🏆 Incredible! ${streak}-Day Streak at Risk!`;
+        body = `You've built an amazing ${streak}-day habit. Don't let it slip away now!`;
+      } else if (streak >= 14) {
+        title = `🔥 ${streak}-Day Streak at Risk!`;
+        body = `Two weeks strong! Keep your momentum going - practice now!`;
+      } else if (streak >= 7) {
+        title = `⭐ ${streak}-Day Streak at Risk!`;
+        body = `One week of dedication! Don't break the chain now!`;
+      } else if (streak >= 3) {
+        title = `🔥 ${streak}-Day Streak at Risk!`;
+        body = `You're building a great habit! Keep it going!`;
+      } else {
+        title = `💪 Keep Your ${streak}-Day Streak Alive!`;
+        body = `Practice today to continue your progress!`;
+      }
+
       try {
         const message = {
-          notification: {
-            title: `🔥 ${user.currentStreak}-Day Streak at Risk!`,
-            body: "Don't lose your progress! Practice now to keep your streak alive.",
-          },
+          notification: { title, body },
           data: {
             action: 'streak_reminder',
-            currentStreak: String(user.currentStreak),
+            currentStreak: String(streak),
           },
           token: user.fcmToken,
         };
