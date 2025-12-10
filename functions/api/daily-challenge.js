@@ -44,7 +44,11 @@ const THEMES = [
 ];
 
 function getTodayTheme() {
-    const dayOfYear = Math.floor((new Date() - new Date(new Date().getFullYear(), 0, 0)) / 1000 / 60 / 60 / 24);
+    const now = new Date();
+    // Use UTC date for consistency
+    const startOfYear = Date.UTC(now.getUTCFullYear(), 0, 0);
+    const nowUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const dayOfYear = Math.floor((nowUTC - startOfYear) / (1000 * 60 * 60 * 24));
     return THEMES[dayOfYear % THEMES.length];
 }
 
@@ -82,7 +86,8 @@ class SeededRandom {
 
 function getTodaySeed() {
     const today = new Date();
-    return today.getFullYear() * 10000 + (today.getMonth() + 1) * 100 + today.getDate();
+    // Use UTC date for consistency with API date checks
+    return today.getUTCFullYear() * 10000 + (today.getUTCMonth() + 1) * 100 + today.getUTCDate();
 }
 
 function generateOptions(wordData, wordPool, targetLang, rng, count = 3) {
@@ -345,12 +350,19 @@ async function handleChallenge(req, res) {
                     });
                 }
 
+                console.log(`[DAILY-CHALLENGE] Found existing score for ${userId}:`, {
+                    completed: existingData.completed,
+                    hasSavedProgress: !!existingData.savedProgress,
+                    savedProgressKeys: existingData.savedProgress ? Object.keys(existingData.savedProgress) : []
+                });
+
                 if (existingData.savedProgress) {
                     const progress = existingData.savedProgress;
                     const answeredQuestions = progress.answers?.length || 0;
                     const totalQuestions = progress.challenge?.totalQuestions || 13;
 
                     if (progress.lives > 0 && answeredQuestions < totalQuestions) {
+                        console.log('[DAILY-CHALLENGE] Returning saved progress');
                         return res.status(200).json({
                             success: true,
                             hasProgress: true,
@@ -358,6 +370,7 @@ async function handleChallenge(req, res) {
                             message: 'Resume from where you left off!'
                         });
                     } else {
+                        console.log('[DAILY-CHALLENGE] Saved progress exists but invalid/completed', { lives: progress.lives, answered: answeredQuestions, total: totalQuestions });
                         return res.status(200).json({
                             success: false,
                             error: 'Already completed',
@@ -366,7 +379,11 @@ async function handleChallenge(req, res) {
                             completedAt: existingData.timestamp
                         });
                     }
+                } else {
+                    console.log('[DAILY-CHALLENGE] Existing score found but NO savedProgress');
                 }
+            } else {
+                console.log(`[DAILY-CHALLENGE] No existing score found for ${userId} on ${today}`);
             }
         }
 
@@ -391,6 +408,11 @@ async function handleSubmitScore(req, res) {
         if (!userId || score === undefined || !maxScore) {
             return res.status(400).json({ success: false, error: 'Missing required fields' });
         }
+
+        console.log(`[SUBMIT-SCORE] Received submission for ${userId}`, {
+            score, completed, hasSavedProgress: !!savedProgress,
+            savedProgressKeys: savedProgress ? Object.keys(savedProgress) : []
+        });
 
         // Skip saving for guests to prevent collisions
         if (userId === 'guest' || userId === 'undefined') {

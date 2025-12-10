@@ -44,8 +44,10 @@ const weeklyChallenge = require('./api/weekly-challenge');
 app.get('/weekly/challenge', weeklyChallenge.handleWeeklyChallenge);
 app.post('/weekly/submit', weeklyChallenge.handleWeeklySubmitWord);
 app.post('/weekly/hint', weeklyChallenge.handleWeeklyHint);
+app.post('/weekly/tip', weeklyChallenge.handleWeeklyTip);   // Tips with meaning/translation
 app.get('/weekly/leaderboard', weeklyChallenge.handleWeeklyLeaderboard);
 app.get('/weekly/generate', weeklyChallenge.handleGenerateWordPuzzle);
+app.post('/weekly/curated', weeklyChallenge.handleCuratedWords);  // n8n curated words endpoint
 
 // Leaderboard Routes
 const leaderboard = require('./api/leaderboard');
