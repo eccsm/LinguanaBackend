@@ -103,25 +103,33 @@ async function generateWeeklyPuzzleWords() {
 
         console.log('[WEEKLY-PUZZLE] Generating MIXED-LANGUAGE puzzle words...');
         const prompt = `Generate a multilingual Wordscapes-style crossword puzzle.
+
 Requirements:
 1. Pick a 6-7 letter "root word" (e.g. "LISTEN", "BANANA") in English, Spanish, French, German, Italian, Portuguese, or Turkish.
 2. The "letters" pool must be the scrambled letters of this root word.
-3. Find 10-15 valid words that can be formed using ONLY the letters in the pool.
-4. **CRITICAL:** The words can be from ANY of these languages: English, Spanish, French, German, Italian, Portuguese, Turkish. Mix them up!
-5. Arrange these words into a connected crossword grid (max 8x10).
-6. Words must be 3-7 letters long.
-7. No slang, no offensive words.
+3. Find 8-12 valid words that can be formed using ONLY the letters in the pool.
+4. The words can be from ANY of these languages: English, Spanish, French, German, Italian, Portuguese, Turkish. Mix them up!
+5. Words must be 3-7 letters long.
+6. No slang, no offensive words.
+
+**CRITICAL CONNECTIVITY RULES:**
+- ALL words must be connected like a real crossword puzzle
+- The first word should be placed horizontally in the middle of the grid
+- Each subsequent word MUST share at least one letter cell with an existing word
+- Words crossing each other must have the SAME letter at the intersection point
+- Example: If "CAT" is at row 2, col 0 horizontal, and "ACE" needs to use the "A", place "ACE" vertically at row 1, col 1 so the "A" in row 2, col 1 is shared
 
 Return JSON format ONLY:
 {
-  "letters": ["S", "T", "E", "P", "S", "E"],
+  "letters": ["L", "I", "S", "T", "E", "N"],
   "words": [
-    {"word": "STEPS", "lang": "en", "row": 4, "col": 2, "direction": "H", "points": 10},
-    {"word": "HOLA", "lang": "es", "row": 2, "col": 4, "direction": "V", "points": 5},
-    {"word": "EVET", "lang": "tr", "row": 5, "col": 5, "direction": "H", "points": 8}
+    {"word": "LISTEN", "lang": "en", "row": 2, "col": 1, "direction": "H", "points": 15},
+    {"word": "TEN", "lang": "en", "row": 1, "col": 4, "direction": "V", "points": 8},
+    {"word": "SIT", "lang": "en", "row": 2, "col": 2, "direction": "V", "points": 8},
+    {"word": "NET", "lang": "en", "row": 3, "col": 4, "direction": "V", "points": 8}
   ]
 }
-Note: "direction" should be "H" (Horizontal) or "V" (Vertical). Row/Col are 0-indexed.`;
+Note: "direction" is "H" (Horizontal) or "V" (Vertical). Row/Col are 0-indexed. Grid max 10x10.`;
 
         const response = await axios.post(
             'https://api.openai.com/v1/chat/completions',
@@ -159,44 +167,83 @@ Note: "direction" should be "H" (Horizontal) or "V" (Vertical). Row/Col are 0-in
             points: w.points || (w.word.length <= 3 ? 8 : w.word.length <= 4 ? 10 : w.word.length <= 5 ? 15 : 25)
         }));
 
-        // Validate grid - ensure no conflicting letters at overlapping cells
+        // Validate grid - ensure no conflicting letters and proper connectivity
         const validatedWords = [];
         const occupiedCells = {}; // key: "row,col" -> letter
 
-        for (const w of puzzle.words) {
-            let r = w.row;
-            let c = w.col;
-            const isHoriz = w.direction === 'H';
-            let isValid = true;
-
-            // Check if this word conflicts with existing cells
-            for (let i = 0; i < w.word.length; i++) {
-                const key = `${r},${c}`;
-                const letter = w.word[i];
-
-                if (occupiedCells[key] && occupiedCells[key] !== letter) {
-                    console.log(`[PUZZLE-VALIDATE] Conflict at ${key}: existing=${occupiedCells[key]}, new=${letter} from word ${w.word}`);
-                    isValid = false;
-                    break;
-                }
-
+        // Helper function to get all cells of a word
+        const getWordCells = (word) => {
+            const cells = [];
+            let r = word.row;
+            let c = word.col;
+            const isHoriz = word.direction === 'H';
+            for (let i = 0; i < word.word.length; i++) {
+                cells.push({ row: r, col: c, letter: word.word[i] });
                 if (isHoriz) c++; else r++;
             }
+            return cells;
+        };
 
-            if (isValid) {
-                // Mark cells as occupied
-                r = w.row;
-                c = w.col;
-                for (let i = 0; i < w.word.length; i++) {
-                    const key = `${r},${c}`;
-                    occupiedCells[key] = w.word[i];
-                    if (isHoriz) c++; else r++;
+        // Helper function to check if a word intersects with existing cells
+        const hasIntersection = (word) => {
+            const cells = getWordCells(word);
+            for (const cell of cells) {
+                const key = `${cell.row},${cell.col}`;
+                if (occupiedCells[key] && occupiedCells[key] === cell.letter) {
+                    return true; // Found a valid intersection
                 }
-                validatedWords.push(w);
             }
+            return false;
+        };
+
+        // Helper function to check if word has conflicts
+        const hasConflict = (word) => {
+            const cells = getWordCells(word);
+            for (const cell of cells) {
+                const key = `${cell.row},${cell.col}`;
+                if (occupiedCells[key] && occupiedCells[key] !== cell.letter) {
+                    console.log(`[PUZZLE-VALIDATE] Conflict at ${key}: existing=${occupiedCells[key]}, new=${cell.letter} from word ${word.word}`);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        // Sort words by length (descending) to place longer words first
+        const sortedWords = [...puzzle.words].sort((a, b) => b.word.length - a.word.length);
+
+        for (let i = 0; i < sortedWords.length; i++) {
+            const w = sortedWords[i];
+
+            // Check for conflicts (different letter at same cell)
+            if (hasConflict(w)) {
+                console.log(`[PUZZLE-VALIDATE] Word ${w.word} conflicts with existing words - skipping`);
+                continue;
+            }
+
+            // First word doesn't need intersection, subsequent words must intersect
+            if (validatedWords.length > 0 && !hasIntersection(w)) {
+                console.log(`[PUZZLE-VALIDATE] Word ${w.word} has no intersection with existing grid - skipping`);
+                continue;
+            }
+
+            // Word is valid - add its cells to occupiedCells
+            const cells = getWordCells(w);
+            for (const cell of cells) {
+                const key = `${cell.row},${cell.col}`;
+                occupiedCells[key] = cell.letter;
+            }
+            validatedWords.push(w);
+            console.log(`[PUZZLE-VALIDATE] Added word ${w.word} (${w.direction}) at ${w.row},${w.col}`);
         }
 
-        console.log(`[PUZZLE-VALIDATE] Valid words: ${validatedWords.length}/${puzzle.words.length}`);
+        console.log(`[PUZZLE-VALIDATE] Valid connected words: ${validatedWords.length}/${puzzle.words.length}`);
+
+        // If too few words are valid, log a warning
+        if (validatedWords.length < 4) {
+            console.warn('[PUZZLE-VALIDATE] Warning: Very few valid words. Puzzle quality may be poor.');
+        }
+
         puzzle.words = validatedWords;
 
         return puzzle;
