@@ -5,15 +5,20 @@ const { FieldValue } = require('firebase-admin/firestore');
 async function handleLeaderboard(req, res) {
     try {
         const { date, limit = 100 } = req.query;
+        // Cap limit to 50 to prevent excessive reads
+        const safeLimit = Math.min(parseInt(limit) || 50, 50);
         const db = admin.firestore();
         const today = date || new Date().toISOString().split('T')[0];
+
+        // Add caching headers: 1 min client, 5 min CDN
+        res.set('Cache-Control', 'public, max-age=60, s-maxage=300');
 
         const scoresRef = db.collection('dailyChallengeScores');
         const query = scoresRef
             .where('date', '==', today)
             .orderBy('score', 'desc')
             .orderBy('completionTime', 'asc')
-            .limit(parseInt(limit));
+            .limit(safeLimit);
 
         const snapshot = await query.get();
 
@@ -97,12 +102,22 @@ async function handleAwardWinner(req, res) {
             });
         }
 
-        const userRef = db.collection('users').doc(winnerId);
-        await userRef.update({ gems: FieldValue.increment(100) });
+        await db.runTransaction(async (transaction) => {
+            const freshWinnerDoc = await transaction.get(winnerDoc.ref);
+            if (!freshWinnerDoc.exists) {
+                throw new Error("Winner document disappeared");
+            }
 
-        await winnerDoc.ref.update({
-            gemAwarded: true,
-            gemAwardedAt: FieldValue.serverTimestamp()
+            const freshWinnerData = freshWinnerDoc.data();
+            if (freshWinnerData.gemAwarded) {
+                return; // Already awarded, do nothing
+            }
+
+            transaction.update(userRef, { gems: FieldValue.increment(100) });
+            transaction.update(winnerDoc.ref, {
+                gemAwarded: true,
+                gemAwardedAt: FieldValue.serverTimestamp()
+            });
         });
 
         return res.status(200).json({

@@ -1,4 +1,4 @@
-require('dotenv').config();
+// require('dotenv').config();
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const express = require('express');
@@ -65,9 +65,20 @@ app.all('/review', wrapHandler('./api/review'));
 app.all('/extract-vocabulary', wrapHandler('./api/extract-vocabulary'));
 app.all('/grant-rewards', wrapHandler('./api/grant-rewards'));
 app.all('/app-ads', wrapHandler('./api/app-ads'));
+app.all('/app-ads.txt', wrapHandler('./api/app-ads'));
 
 // Export the Express app as a Cloud Function named 'api'
 const { onRequest } = require('firebase-functions/v2/https');
 
 // Export the Express app as a Cloud Function named 'api'
-exports.api = onRequest({ cors: true, invoker: 'public' }, app);
+exports.api = onRequest({
+    cors: true,
+    invoker: 'public',
+    secrets: [
+        'ELEVENLABS_API_KEY',
+        'APP_CLIENT_SECRET',
+        'GOOGLE_WEB_CLIENT_ID',
+        'OPENAI_API_KEY',
+        'N8N_WEBHOOK_SECRET'
+    ]
+}, app);

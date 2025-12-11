@@ -360,6 +360,9 @@ async function handleWeeklyChallenge(req, res) {
         const weeklyScoreDoc = await weeklyScoreRef.get();
         const weeklyScore = weeklyScoreDoc.exists ? weeklyScoreDoc.data().totalScore : 0;
 
+        // Add caching headers: 5 min client, 10 min CDN
+        res.set('Cache-Control', 'public, max-age=300, s-maxage=600');
+
         res.json({
             success: true,
             puzzleId,
@@ -614,7 +617,12 @@ async function handleWeeklyTip(req, res) {
 async function handleWeeklyLeaderboard(req, res) {
     try {
         const { type = 'daily', limit = 50 } = req.query;
+        // Cap limit to 50 to prevent excessive reads
+        const safeLimit = Math.min(parseInt(limit) || 50, 50);
         const db = admin.firestore();
+
+        // Add caching headers: 1 min client, 5 min CDN
+        res.set('Cache-Control', 'public, max-age=60, s-maxage=300');
 
         if (type === 'weekly') {
             // Weekly aggregated leaderboard
@@ -625,7 +633,7 @@ async function handleWeeklyLeaderboard(req, res) {
                 snapshot = await db.collection('weeklyAggregatedScores')
                     .where('weekId', '==', weekId)
                     .orderBy('totalScore', 'desc')
-                    .limit(parseInt(limit))
+                    .limit(safeLimit)
                     .get();
             } catch (indexError) {
                 // If index doesn't exist yet, return empty leaderboard with helpful message
@@ -668,7 +676,7 @@ async function handleWeeklyLeaderboard(req, res) {
                     .where('puzzleDate', '==', puzzleDate)
                     .orderBy('score', 'desc')
                     .orderBy('completedAt', 'asc')
-                    .limit(parseInt(limit))
+                    .limit(safeLimit)
                     .get();
             } catch (indexError) {
                 console.warn('[WEEKLY-LEADERBOARD] Daily index not ready:', indexError.message);
@@ -719,6 +727,8 @@ async function handleGenerateWordPuzzle(req, res) {
         const targetDate = new Date();
         targetDate.setDate(targetDate.getDate() + daysAhead);
         const dateStr = targetDate.toISOString().split('T')[0];
+
+        console.log(`[WEEKLY-GENERATE] Request for date: ${dateStr} (daysAhead: ${daysAhead})`);
 
         const cacheRef = db.collection('weeklyPuzzleCache').doc(dateStr);
         const cacheDoc = await cacheRef.get();
@@ -959,7 +969,7 @@ function generateGridFromWords(wordObjects, letters) {
 
     /**
      * Check if placing a word would create invalid adjacencies
-     * Words should only touch at valid intersection points
+     * Words should only touch at valid intersection points, never visually merge
      */
     const checkAdjacency = (word, row, col, direction) => {
         const len = word.length;
@@ -980,7 +990,7 @@ function generateGridFromWords(wordObjects, letters) {
                 return false;
             }
 
-            // Check cells before and after the word (parallel adjacency)
+            // Check parallel adjacency for non-intersection cells
             if (direction === 'H') {
                 // Check above and below for non-intersection cells
                 if (!existingCell) {
@@ -1006,9 +1016,44 @@ function generateGridFromWords(wordObjects, letters) {
         if (direction === 'H') {
             if (getCell(row, col - 1)) return false; // Cell before
             if (getCell(row, col + len)) return false; // Cell after
+
+            // **NEW**: Check corner cells to prevent visual merging
+            // If there's a vertical word ending just before this word starts,
+            // it will visually appear to merge (like "AVERO" instead of "VERO")
+            const cornerTopLeft = getCell(row - 1, col - 1);
+            const cornerBottomLeft = getCell(row + 1, col - 1);
+            const cornerTopRight = getCell(row - 1, col + len);
+            const cornerBottomRight = getCell(row + 1, col + len);
+
+            // Check if a vertical word ends/starts adjacent to our word's start/end
+            if (cornerTopLeft && cornerTopLeft.direction === 'V') {
+                // Check if there's a cell directly above our start that connects
+                const cellAboveStart = getCell(row - 1, col);
+                if (!cellAboveStart) return false; // Would create visual merge
+            }
+            if (cornerBottomLeft && cornerBottomLeft.direction === 'V') {
+                const cellBelowStart = getCell(row + 1, col);
+                if (!cellBelowStart) return false;
+            }
         } else {
             if (getCell(row - 1, col)) return false; // Cell before
             if (getCell(row + len, col)) return false; // Cell after
+
+            // **NEW**: Check corner cells for vertical words
+            const cornerTopLeft = getCell(row - 1, col - 1);
+            const cornerTopRight = getCell(row - 1, col + 1);
+            const cornerBottomLeft = getCell(row + len, col - 1);
+            const cornerBottomRight = getCell(row + len, col + 1);
+
+            // Check if a horizontal word ends/starts adjacent to our word's start/end
+            if (cornerTopLeft && cornerTopLeft.direction === 'H') {
+                const cellLeftOfStart = getCell(row, col - 1);
+                if (!cellLeftOfStart) return false;
+            }
+            if (cornerTopRight && cornerTopRight.direction === 'H') {
+                const cellRightOfStart = getCell(row, col + 1);
+                if (!cellRightOfStart) return false;
+            }
         }
 
         return true;

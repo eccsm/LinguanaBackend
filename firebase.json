@@ -18,6 +18,10 @@
         ],
         "rewrites": [
             {
+                "source": "/app-ads.txt",
+                "function": "api"
+            },
+            {
                 "source": "/api/**",
                 "function": "api"
             }
