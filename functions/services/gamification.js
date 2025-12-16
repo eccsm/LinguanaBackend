@@ -276,9 +276,11 @@ const grantSessionRewards = async (userId, type, sessionId) => {
     }
 
     // Define rewards based on session type
+    // NOTE: Review sessions already award 10 XP per card in processReviewBatch
+    // So we only award gems here to avoid double-counting XP
     const rewards = {
       review: {
-        xp: 10,
+        xp: 0,  // XP already awarded per card in processReviewBatch
         gems: 0,
         description: 'Vocabulary Review'
       },

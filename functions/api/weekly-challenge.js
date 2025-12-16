@@ -9,10 +9,10 @@ const axios = require('axios');
 const WEEKLY_PUZZLE_CONFIG = {
     wordsPerPuzzle: 12,
     lettersInWheel: 6,
-    hintCost: 5,      // Gems to reveal a word completely
-    tipCost: 2,       // Gems to show meaning/translation hint
+    hintCost: 100,        // XP to reveal a single letter cell
+    tipCost: 250,         // XP to show meaning/translation hint
     completionReward: 50,
-    leaderboardPrizes: { 1: 200, 2: 100, 3: 50 }
+    leaderboardPrizes: { 1: 1000, 2: 750, 3: 500, '4-10': 250, '11-50': 100 }
 };
 
 function getCurrentPuzzleId() {
@@ -80,10 +80,16 @@ async function handleWeeklySubmitWord(req, res) {
             progress = {
                 puzzleDate, userId, weekId,
                 displayName: userData.displayName || userData.username || 'Anonymous',
+                username: userData.username || '',
                 avatar: userData.equippedAvatar || null,
                 foundWords: [], score: 0, hintsUsed: 0, completed: false,
                 startedAt: FieldValue.serverTimestamp(),
             };
+        }
+
+        // Ensure foundWords is always an array (could be undefined from old Firestore docs)
+        if (!progress.foundWords) {
+            progress.foundWords = [];
         }
 
         if (progress.foundWords.includes(guessWord)) {
@@ -91,7 +97,8 @@ async function handleWeeklySubmitWord(req, res) {
         }
 
         progress.foundWords.push(guessWord);
-        progress.score += validWord.points;
+        const pointsToAdd = Number.isFinite(validWord.points) ? validWord.points : 0;
+        progress.score = (Number.isFinite(progress.score) ? progress.score : 0) + pointsToAdd;
         progress.completed = progress.foundWords.length >= puzzle.words.length;
 
         if (progress.completed && !progress.completedAt) {
@@ -107,7 +114,7 @@ async function handleWeeklySubmitWord(req, res) {
         if (weeklyScoreDoc.exists) {
             // Increment existing score
             await weeklyScoreRef.update({
-                totalScore: FieldValue.increment(validWord.points),
+                totalScore: FieldValue.increment(pointsToAdd),
                 lastUpdated: FieldValue.serverTimestamp(),
             });
         } else {
@@ -118,8 +125,9 @@ async function handleWeeklySubmitWord(req, res) {
                 weekId,
                 userId,
                 displayName: userData.displayName || userData.username || 'Anonymous',
+                username: userData.username || '',
                 avatar: userData.equippedAvatar || null,
-                totalScore: validWord.points,
+                totalScore: pointsToAdd,
                 createdAt: FieldValue.serverTimestamp(),
                 lastUpdated: FieldValue.serverTimestamp(),
             });
@@ -218,7 +226,8 @@ Note: "direction" is "H" (Horizontal) or "V" (Vertical). Row/Col are 0-indexed. 
             row: w.row,
             col: w.col,
             direction: w.direction,
-            points: w.points || (w.word.length <= 3 ? 8 : w.word.length <= 4 ? 10 : w.word.length <= 5 ? 15 : 25)
+            points: (typeof w.points === 'number' ? w.points : parseInt(w.points)) ||
+                (String(w.word).length <= 3 ? 8 : String(w.word).length <= 4 ? 10 : String(w.word).length <= 5 ? 15 : 25)
         }));
 
         // Validate grid - ensure no conflicting letters and proper connectivity
@@ -344,7 +353,7 @@ async function handleWeeklyChallenge(req, res) {
             puzzleData = {
                 puzzleDate,
                 ...generated,
-                totalPoints: generated.words.reduce((sum, w) => sum + w.points, 0),
+                totalPoints: generated.words.reduce((sum, w) => sum + (Number.isFinite(w.points) ? w.points : 0), 0),
                 generatedAt: FieldValue.serverTimestamp()
             };
             await puzzleRef.set(puzzleData);
@@ -360,8 +369,7 @@ async function handleWeeklyChallenge(req, res) {
         const weeklyScoreDoc = await weeklyScoreRef.get();
         const weeklyScore = weeklyScoreDoc.exists ? weeklyScoreDoc.data().totalScore : 0;
 
-        // Add caching headers: 5 min client, 10 min CDN
-        res.set('Cache-Control', 'public, max-age=300, s-maxage=600');
+        // Note: No caching - responses include user-specific data (userProgress, weeklyScore)
 
         res.json({
             success: true,
@@ -458,18 +466,75 @@ async function handleWeeklyHint(req, res) {
         }
 
         const progressRef = db.collection('weeklyPuzzleScores').doc(`${puzzleDate}_${userId}`);
-        await progressRef.set({
+
+        // Add the newly revealed cell to the set
+        const newRevealedSet = new Set(progress.revealedCells || []);
+        newRevealedSet.add(targetCell.key);
+
+        // Check if any words are now fully revealed by hints
+        const foundWordsByHint = [];
+        let pointsEarned = 0;
+        const existingFoundWords = progress.foundWords || [];
+
+        puzzle.words.forEach(wordObj => {
+            if (existingFoundWords.includes(wordObj.word)) return; // Skip already found words
+
+            // Check if all cells of this word are revealed
+            let allCellsRevealed = true;
+            if (wordObj.direction === 'H') {
+                for (let i = 0; i < wordObj.word.length; i++) {
+                    const cellKey = `${wordObj.row},${wordObj.col + i}`;
+                    if (!newRevealedSet.has(cellKey)) {
+                        allCellsRevealed = false;
+                        break;
+                    }
+                }
+            } else {
+                for (let i = 0; i < wordObj.word.length; i++) {
+                    const cellKey = `${wordObj.row + i},${wordObj.col}`;
+                    if (!newRevealedSet.has(cellKey)) {
+                        allCellsRevealed = false;
+                        break;
+                    }
+                }
+            }
+
+            if (allCellsRevealed) {
+                foundWordsByHint.push(wordObj.word);
+                pointsEarned += wordObj.points || 10;
+            }
+        });
+
+        // Prepare the update data
+        const updateData = {
             puzzleDate, userId,
             revealedCells: FieldValue.arrayUnion(targetCell.key),
             hintsUsed: (progress.hintsUsed || 0) + 1,
             startedAt: progress.startedAt || FieldValue.serverTimestamp(),
-        }, { merge: true });
+        };
+
+        // If words were found by hints, add them
+        if (foundWordsByHint.length > 0) {
+            updateData.foundWords = FieldValue.arrayUnion(...foundWordsByHint);
+            updateData.totalScore = FieldValue.increment(pointsEarned);
+        }
+
+        await progressRef.set(updateData, { merge: true });
+
+        // Check if puzzle is now complete
+        const totalWordsFound = existingFoundWords.length + foundWordsByHint.length;
+        const isComplete = totalWordsFound >= puzzle.words.length;
 
         return res.status(200).json({
             success: true,
             cell: { row: targetCell.row, col: targetCell.col, letter: targetCell.letter },
             xpCost,
             xpRemaining: (user.xp || 0) - xpCost,
+            wordsRevealedByHint: foundWordsByHint,
+            pointsEarned,
+            completed: isComplete,
+            wordsFound: totalWordsFound,
+            totalWords: puzzle.words.length,
         });
     } catch (error) {
         console.error('[WEEKLY-HINT] Error:', error);
@@ -495,7 +560,7 @@ async function handleWeeklyTip(req, res) {
         if (!userDoc.exists) return res.status(404).json({ success: false, error: 'User not found' });
 
         const user = userDoc.data();
-        const tipCost = WEEKLY_PUZZLE_CONFIG.tipCost || 250;
+        const tipCost = WEEKLY_PUZZLE_CONFIG.tipCost;
 
         // Check XP unless paid by ad
         if (!paidByAd && (user.xp || 0) < tipCost) {
@@ -515,6 +580,16 @@ async function handleWeeklyTip(req, res) {
 
         const puzzle = puzzleDoc.data();
         const progress = progressDoc.exists ? progressDoc.data() : { foundWords: [], tipsUsed: [] };
+
+        // Debug logging
+        console.log(`[WEEKLY-TIP] PuzzleDate: ${puzzleDate}, UserId: ${userId}`);
+        console.log(`[WEEKLY-TIP] Puzzle has ${puzzle.words?.length || 0} words`);
+        console.log(`[WEEKLY-TIP] Progress - foundWords: ${JSON.stringify(progress.foundWords || [])}, tipsUsed: ${JSON.stringify(progress.tipsUsed || [])}`);
+        console.log(`[WEEKLY-TIP] Words with meaning:`, puzzle.words?.map(w => ({
+            word: w.word,
+            hasMeaning: !!w.meaning,
+            meaningType: typeof w.meaning
+        })));
 
         // Get user's native language (default to English)
         const nativeLanguage = user.nativeLanguage || 'en';
@@ -550,6 +625,17 @@ async function handleWeeklyTip(req, res) {
             !tipsUsed.includes(w.word) &&
             w.meaning && typeof w.meaning === 'object'
         );
+
+        // Debug: log why words failed eligibility
+        console.log(`[WEEKLY-TIP] Eligible words: ${eligibleWords.length}/${puzzle.words.length}`);
+        puzzle.words.forEach(w => {
+            const inFound = foundWords.includes(w.word);
+            const inTips = tipsUsed.includes(w.word);
+            const hasMeaning = w.meaning && typeof w.meaning === 'object';
+            if (inFound || inTips || !hasMeaning) {
+                console.log(`[WEEKLY-TIP] Word ${w.word} excluded: found=${inFound}, tipsUsed=${inTips}, hasMeaning=${hasMeaning}`);
+            }
+        });
 
         if (eligibleWords.length === 0) {
             return res.status(400).json({
@@ -597,11 +683,19 @@ async function handleWeeklyTip(req, res) {
 
         console.log(`[WEEKLY-TIP] User ${userId} got tip for word in ${tipWord.lang}: "${meaningText}" (native: ${nativeLangName})`);
 
+        // Map short lang codes to full names (some puzzles have codes, some have names)
+        const langCodeToFullName = {
+            'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
+            'it': 'Italian', 'pt': 'Portuguese', 'tr': 'Turkish', 'ru': 'Russian',
+            'ar': 'Arabic', 'hi': 'Hindi', 'zh': 'Chinese', 'ja': 'Japanese', 'ko': 'Korean'
+        };
+        const wordLanguageName = langCodeToFullName[tipWord.lang] || tipWord.lang || 'Unknown';
+
         return res.status(200).json({
             success: true,
             tip: {
                 meaning: meaningText,
-                wordLanguage: tipWord.lang,        // Original language of the word
+                wordLanguage: wordLanguageName,   // Full language name (e.g., "Portuguese")
                 translationLanguage: nativeLangName, // Language the meaning is in
                 wordLength: tipWord.word.length,   // Hint about word length
             },
@@ -648,13 +742,27 @@ async function handleWeeklyLeaderboard(req, res) {
                 });
             }
 
+            // Fetch current user data for all users in leaderboard
+            const userIds = snapshot.docs.map(doc => doc.data().userId);
+            const userDocs = await Promise.all(
+                userIds.map(uid => db.collection('users').doc(uid).get())
+            );
+            const userDataMap = {};
+            userDocs.forEach(doc => {
+                if (doc.exists) {
+                    userDataMap[doc.id] = doc.data();
+                }
+            });
+
             const leaderboard = snapshot.docs.map((doc, index) => {
                 const data = doc.data();
+                const currentUser = userDataMap[data.userId] || {};
                 return {
                     rank: index + 1,
                     userId: data.userId,
-                    displayName: data.displayName || 'Anonymous',
-                    avatar: data.avatar || null,
+                    displayName: currentUser.displayName || currentUser.username || data.displayName || 'Anonymous',
+                    username: currentUser.username || data.username || '',
+                    avatar: currentUser.equippedAvatar || data.avatar || null,
                     score: data.totalScore,
                 };
             });
@@ -689,13 +797,27 @@ async function handleWeeklyLeaderboard(req, res) {
                 });
             }
 
+            // Fetch current user data for all users in leaderboard
+            const userIds = snapshot.docs.map(doc => doc.data().userId);
+            const userDocs = await Promise.all(
+                userIds.map(uid => db.collection('users').doc(uid).get())
+            );
+            const userDataMap = {};
+            userDocs.forEach(doc => {
+                if (doc.exists) {
+                    userDataMap[doc.id] = doc.data();
+                }
+            });
+
             const leaderboard = snapshot.docs.map((doc, index) => {
                 const data = doc.data();
+                const currentUser = userDataMap[data.userId] || {};
                 return {
                     rank: index + 1,
                     userId: data.userId,
-                    displayName: data.displayName || 'Anonymous',
-                    avatar: data.avatar || null,
+                    displayName: currentUser.displayName || currentUser.username || data.displayName || 'Anonymous',
+                    username: currentUser.username || data.username || '',
+                    avatar: currentUser.equippedAvatar || data.avatar || null,
                     score: data.score,
                     wordsFound: data.foundWords?.length || 0,
                     completed: data.completed || false,
@@ -1131,6 +1253,7 @@ function generateGridFromWords(wordObjects, letters) {
 
     /**
      * Find all possible placements for a word
+     * Improved to distribute words across the grid instead of clustering
      */
     const findPlacements = (word) => {
         const placements = [];
@@ -1142,6 +1265,35 @@ function generateGridFromWords(wordObjects, letters) {
             return [{ row, col, direction: 'H', score: 100 }];
         }
 
+        // Calculate center of mass of already placed words to prefer spreading out
+        let sumRow = 0, sumCol = 0, totalCells = 0;
+        for (const placed of placedWords) {
+            for (let i = 0; i < placed.word.length; i++) {
+                const r = placed.direction === 'H' ? placed.row : placed.row + i;
+                const c = placed.direction === 'H' ? placed.col + i : placed.col;
+                sumRow += r;
+                sumCol += c;
+                totalCells++;
+            }
+        }
+        const centerOfMassRow = totalCells > 0 ? sumRow / totalCells : GRID_SIZE / 2;
+        const centerOfMassCol = totalCells > 0 ? sumCol / totalCells : GRID_SIZE / 2;
+
+        // Track which intersection points have already been used
+        const usedIntersections = new Set();
+        for (const placed of placedWords) {
+            // Check if this word shares any cells with others
+            for (let i = 0; i < placed.word.length; i++) {
+                const r = placed.direction === 'H' ? placed.row : placed.row + i;
+                const c = placed.direction === 'H' ? placed.col + i : placed.col;
+                const cell = getCell(r, c);
+                // If cell has a different direction, it's an intersection
+                if (cell && cell.direction !== placed.direction) {
+                    usedIntersections.add(`${r},${c}`);
+                }
+            }
+        }
+
         // Try to intersect with existing words
         for (const placed of placedWords) {
             for (let i = 0; i < placed.word.length; i++) {
@@ -1150,6 +1302,7 @@ function generateGridFromWords(wordObjects, letters) {
                         // Found matching letter
                         const placedR = placed.direction === 'H' ? placed.row : placed.row + i;
                         const placedC = placed.direction === 'H' ? placed.col + i : placed.col;
+                        const intersectionKey = `${placedR},${placedC}`;
 
                         // Try perpendicular direction only
                         const newDir = placed.direction === 'H' ? 'V' : 'H';
@@ -1157,13 +1310,27 @@ function generateGridFromWords(wordObjects, letters) {
                         const newCol = newDir === 'H' ? placedC - j : placedC;
 
                         if (canPlace(word, newRow, newCol, newDir)) {
-                            // Score based on how central the placement is
-                            const centerDist = Math.abs(newRow - GRID_SIZE / 2) + Math.abs(newCol - GRID_SIZE / 2);
+                            // Calculate word's center position
+                            const wordCenterRow = newDir === 'H' ? newRow : newRow + word.length / 2;
+                            const wordCenterCol = newDir === 'H' ? newCol + word.length / 2 : newCol;
+
+                            // Distance from center of mass (prefer spreading out)
+                            const distFromMass = Math.abs(wordCenterRow - centerOfMassRow) +
+                                Math.abs(wordCenterCol - centerOfMassCol);
+
+                            // Penalty for reusing same intersection cell (prefer new cells)
+                            const intersectionPenalty = usedIntersections.has(intersectionKey) ? 30 : 0;
+
+                            // Score: higher = better
+                            // Prefer spreading out (higher distFromMass) and new intersection points
+                            const score = distFromMass * 2 - intersectionPenalty;
+
                             placements.push({
                                 row: newRow,
                                 col: newCol,
                                 direction: newDir,
-                                score: 100 - centerDist
+                                score,
+                                intersectionKey
                             });
                         }
                     }
@@ -1171,8 +1338,21 @@ function generateGridFromWords(wordObjects, letters) {
             }
         }
 
-        // Sort by score (prefer more central placements)
+        // Sort by score (higher = more spread out)
         placements.sort((a, b) => b.score - a.score);
+
+        // If multiple placements have similar scores, pick one at random for variety
+        if (placements.length > 1) {
+            const topScore = placements[0].score;
+            const similarPlacements = placements.filter(p => Math.abs(p.score - topScore) < 5);
+            if (similarPlacements.length > 1) {
+                // Shuffle similar placements
+                const randomIndex = Math.floor(Math.random() * similarPlacements.length);
+                const chosen = similarPlacements[randomIndex];
+                return [chosen, ...placements.filter(p => p !== chosen)];
+            }
+        }
+
         return placements;
     };
 
@@ -1213,6 +1393,208 @@ function generateGridFromWords(wordObjects, letters) {
     };
 }
 
+/**
+ * Calculate previous week's Monday date
+ */
+function getPreviousWeekId() {
+    const today = new Date();
+    const utcYear = today.getUTCFullYear();
+    const utcMonth = today.getUTCMonth();
+    const utcDate = today.getUTCDate();
+    const utcDay = today.getUTCDay(); // 0=Sunday, 1=Monday, ... 6=Saturday
+
+    // Get this week's Monday
+    const daysFromMonday = utcDay === 0 ? 6 : utcDay - 1;
+    const thisMondayDate = utcDate - daysFromMonday;
+
+    // Go back 7 days to get last week's Monday
+    const lastMondayDate = thisMondayDate - 7;
+    return new Date(Date.UTC(utcYear, utcMonth, lastMondayDate)).toISOString().split('T')[0];
+}
+
+/**
+ * Get gem reward based on rank
+ */
+function getGemRewardForRank(rank) {
+    if (rank === 1) return 1000;
+    if (rank === 2) return 750;
+    if (rank === 3) return 500;
+    if (rank >= 4 && rank <= 10) return 250;
+    if (rank >= 11 && rank <= 50) return 100;
+    return 0;
+}
+
+/**
+ * Get rank tier info for display
+ */
+function getRankTierInfo(rank) {
+    if (rank === 1) return { tier: 'gold', icon: '🥇', title: '1st Place Champion!' };
+    if (rank === 2) return { tier: 'silver', icon: '🥈', title: '2nd Place Winner!' };
+    if (rank === 3) return { tier: 'bronze', icon: '🥉', title: '3rd Place Winner!' };
+    if (rank >= 4 && rank <= 10) return { tier: 'star', icon: '⭐', title: `Top 10 Finisher!` };
+    if (rank >= 11 && rank <= 50) return { tier: 'medal', icon: '🏅', title: `Top 50 Finisher!` };
+    return { tier: 'participant', icon: '🎮', title: 'Participant' };
+}
+
+/**
+ * Award weekly winners - called by n8n every Monday
+ * GET/POST /api/weekly/award-winner
+ */
+async function handleWeeklyAwardWinner(req, res) {
+    try {
+        // Validate webhook secret
+        const webhookSecret = req.headers['x-webhook-secret'] || req.headers['x-client-secret'];
+        if (webhookSecret !== process.env.N8N_WEBHOOK_SECRET && webhookSecret !== process.env.APP_CLIENT_SECRET) {
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+
+        const db = admin.firestore();
+
+        // Get previous week ID (can be overridden via query param for testing)
+        const weekId = req.query.weekId || getPreviousWeekId();
+
+        console.log(`[WEEKLY-AWARD] Processing awards for week: ${weekId}`);
+
+        // Check if already processed
+        const awardRecordRef = db.collection('weeklyAwardRecords').doc(weekId);
+        const awardRecordDoc = await awardRecordRef.get();
+
+        if (awardRecordDoc.exists && awardRecordDoc.data().processed) {
+            return res.status(200).json({
+                success: true,
+                message: 'Awards already processed for this week',
+                weekId,
+                alreadyProcessed: true,
+                winners: awardRecordDoc.data().winners || []
+            });
+        }
+
+        // Query top 50 from weeklyAggregatedScores
+        const scoresQuery = await db.collection('weeklyAggregatedScores')
+            .where('weekId', '==', weekId)
+            .orderBy('totalScore', 'desc')
+            .limit(50)
+            .get();
+
+        if (scoresQuery.empty) {
+            return res.status(200).json({
+                success: true,
+                message: 'No participants found for this week',
+                weekId,
+                winnersCount: 0
+            });
+        }
+
+        const winners = [];
+        const batch = db.batch();
+
+        // Process each winner
+        for (let i = 0; i < scoresQuery.docs.length; i++) {
+            const doc = scoresQuery.docs[i];
+            const scoreData = doc.data();
+            const rank = i + 1;
+            const gems = getGemRewardForRank(rank);
+            const tierInfo = getRankTierInfo(rank);
+
+            if (gems <= 0) continue;
+
+            const userId = scoreData.userId;
+            const userRef = db.collection('users').doc(userId);
+
+            // Award gems
+            batch.update(userRef, {
+                gems: FieldValue.increment(gems)
+            });
+
+            // Set pending weekly reward notification
+            batch.update(userRef, {
+                pendingWeeklyReward: {
+                    weekId,
+                    rank,
+                    gems,
+                    tier: tierInfo.tier,
+                    icon: tierInfo.icon,
+                    title: tierInfo.title,
+                    score: scoreData.totalScore,
+                    awardedAt: new Date().toISOString()
+                }
+            });
+
+            // Mark score as awarded
+            batch.update(doc.ref, {
+                gemAwarded: true,
+                gemAwardedAt: FieldValue.serverTimestamp(),
+                gemsAwarded: gems,
+                rank
+            });
+
+            winners.push({
+                rank,
+                userId,
+                displayName: scoreData.displayName || 'Anonymous',
+                score: scoreData.totalScore,
+                gems,
+                tier: tierInfo.tier
+            });
+
+            console.log(`[WEEKLY-AWARD] Rank ${rank}: ${scoreData.displayName} - ${gems} gems`);
+        }
+
+        // Save award record
+        batch.set(awardRecordRef, {
+            weekId,
+            processed: true,
+            processedAt: FieldValue.serverTimestamp(),
+            winnersCount: winners.length,
+            winners: winners.slice(0, 10) // Store top 10 for quick reference
+        });
+
+        // Commit all updates
+        await batch.commit();
+
+        console.log(`[WEEKLY-AWARD] Successfully awarded ${winners.length} winners for week ${weekId}`);
+
+        return res.status(200).json({
+            success: true,
+            message: `Successfully awarded ${winners.length} winners`,
+            weekId,
+            winnersCount: winners.length,
+            winners: winners.slice(0, 10), // Return top 10 in response
+            totalGemsAwarded: winners.reduce((sum, w) => sum + w.gems, 0)
+        });
+
+    } catch (error) {
+        console.error('[WEEKLY-AWARD] Error:', error);
+        return res.status(500).json({ success: false, error: 'Failed to award winner', details: error.message });
+    }
+}
+
+/**
+ * Clear pending weekly reward after user has seen it
+ * POST /api/weekly/clear-reward
+ */
+async function handleClearWeeklyReward(req, res) {
+    try {
+        const { userId } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ success: false, error: 'Missing userId' });
+        }
+
+        const db = admin.firestore();
+        const userRef = db.collection('users').doc(userId);
+
+        await userRef.update({
+            pendingWeeklyReward: admin.firestore.FieldValue.delete()
+        });
+
+        return res.status(200).json({ success: true, message: 'Reward cleared' });
+    } catch (error) {
+        console.error('[CLEAR-REWARD] Error:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+}
+
 module.exports = {
     handleWeeklyChallenge,
     handleWeeklySubmitWord,
@@ -1221,4 +1603,6 @@ module.exports = {
     handleWeeklyLeaderboard,
     handleGenerateWordPuzzle,
     handleCuratedWords,
+    handleWeeklyAwardWinner,
+    handleClearWeeklyReward,
 };

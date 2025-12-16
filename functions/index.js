@@ -48,11 +48,19 @@ app.post('/weekly/tip', weeklyChallenge.handleWeeklyTip);   // Tips with meaning
 app.get('/weekly/leaderboard', weeklyChallenge.handleWeeklyLeaderboard);
 app.get('/weekly/generate', weeklyChallenge.handleGenerateWordPuzzle);
 app.post('/weekly/curated', weeklyChallenge.handleCuratedWords);  // n8n curated words endpoint
+app.all('/weekly/award-winner', weeklyChallenge.handleWeeklyAwardWinner);  // n8n award winners
+app.post('/weekly/clear-reward', weeklyChallenge.handleClearWeeklyReward);  // Clear pending reward
 
 // Leaderboard Routes
 const leaderboard = require('./api/leaderboard');
 app.get('/daily/leaderboard', leaderboard.handleLeaderboard);
 app.all('/daily/award-winner', leaderboard.handleAwardWinner);  // GET or POST for n8n
+
+// League Routes (Smart matching with real + mock users)
+const leagueService = require('./api/league-service');
+app.post('/league/get-league', leagueService.handleGetLeague);
+app.post('/league/update-profile', leagueService.handleUpdateLeagueProfile);
+app.all('/league/process-weekly', leagueService.handleProcessWeeklyResults);  // n8n weekly trigger
 
 // Other Routes
 app.all('/chat', wrapHandler('./api/chat'));

@@ -390,8 +390,7 @@ async function handleChallenge(req, res) {
         const wordPool = await getTodayUniversalWordPool();
         const challenge = generateUniversalDailyChallenge(wordPool, nativeLanguage);
 
-        // Add caching headers: 5 min client, 10 min CDN
-        res.set('Cache-Control', 'public, max-age=300, s-maxage=600');
+        // Note: No caching for this endpoint - responses are user-specific (completion status)
 
         res.status(200).json({ success: true, challenge });
     } catch (error) {
