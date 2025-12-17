@@ -49,14 +49,24 @@ function getUserTier(score) {
  */
 function generateMockUsers(count, minScore, maxScore) {
     const mocks = [];
+    // Calculate days since Monday for daily progression
+    const now = new Date();
+    const dayOfWeek = now.getUTCDay(); // 0=Sunday
+    const daysSinceMon = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    const dailyBonus = daysSinceMon * 5; // +5 per day
+
+    // Shuffle names to get variety
+    const shuffledNames = [...MOCK_NAMES].sort(() => Math.random() - 0.5);
+
     for (let i = 0; i < count; i++) {
-        const score = Math.floor(Math.random() * (maxScore - minScore)) + minScore;
+        const baseScore = Math.floor(Math.random() * (maxScore - minScore)) + minScore;
+        const score = baseScore + dailyBonus;
         mocks.push({
-            odisplayName: MOCK_NAMES[Math.floor(Math.random() * MOCK_NAMES.length)],
+            displayName: shuffledNames[i % shuffledNames.length],
             avatar: null,
             weeklyScore: score,
             isRealUser: false,
-            userId: `mock_${Date.now()}_${i}`,
+            userId: `mock_${i}_${Date.now()}`,
         });
     }
     return mocks;
@@ -125,10 +135,32 @@ async function handleGetLeague(req, res) {
             : 9999;
 
         // Filter users in the same tier
+        // First get all user IDs to fetch their usernames
+        const userIds = scoresSnapshot.docs
+            .map(doc => doc.data().userId)
+            .filter(id => id && !id.startsWith('mock_'));
+
+        // Fetch usernames from users collection
+        const usernameMap = {};
+        if (userIds.length > 0) {
+            // Batch fetch users (max 10 at a time for Firestore 'in' query)
+            for (let i = 0; i < userIds.length; i += 10) {
+                const batch = userIds.slice(i, i + 10);
+                const usersSnapshot = await db.collection('users')
+                    .where(admin.firestore.FieldPath.documentId(), 'in', batch)
+                    .get();
+                usersSnapshot.docs.forEach(doc => {
+                    const userData = doc.data();
+                    // Prefer username over displayName
+                    usernameMap[doc.id] = userData.username || userData.displayName || 'Player';
+                });
+            }
+        }
+
         let realUsers = scoresSnapshot.docs
             .map(doc => ({
                 userId: doc.data().userId,
-                displayName: doc.data().displayName || 'Player',
+                displayName: usernameMap[doc.data().userId] || doc.data().displayName || 'Player',
                 avatar: doc.data().avatar || null,
                 weeklyScore: doc.data().totalScore || 0,
                 isRealUser: true,
@@ -147,7 +179,7 @@ async function handleGetLeague(req, res) {
                 const additionalUsers = scoresSnapshot.docs
                     .map(doc => ({
                         userId: doc.data().userId,
-                        displayName: doc.data().displayName || 'Player',
+                        displayName: usernameMap[doc.data().userId] || doc.data().displayName || 'Player',
                         avatar: doc.data().avatar || null,
                         weeklyScore: doc.data().totalScore || 0,
                         isRealUser: true,
@@ -207,10 +239,12 @@ async function handleGetLeague(req, res) {
         league.sort((a, b) => b.weeklyScore - a.weeklyScore);
 
         // Assign ranks and zones
+        // Bronze league (lowest tier) has no demotion zone
+        const hasDemotion = userTier !== 'bronze';
         league = league.map((user, index) => ({
             ...user,
             rank: index + 1,
-            zone: index < 5 ? 'promotion' : (index >= 25 ? 'demotion' : 'safe'),
+            zone: index < 5 ? 'promotion' : (hasDemotion && index >= 25 ? 'demotion' : 'safe'),
         }));
 
         // Find user's rank
@@ -233,7 +267,7 @@ async function handleGetLeague(req, res) {
             league = league.map((user, index) => ({
                 ...user,
                 rank: index + 1,
-                zone: index < 5 ? 'promotion' : (index >= 25 ? 'demotion' : 'safe'),
+                zone: index < 5 ? 'promotion' : (hasDemotion && index >= 25 ? 'demotion' : 'safe'),
             }));
         }
 

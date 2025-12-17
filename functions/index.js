@@ -51,6 +51,10 @@ app.post('/weekly/curated', weeklyChallenge.handleCuratedWords);  // n8n curated
 app.all('/weekly/award-winner', weeklyChallenge.handleWeeklyAwardWinner);  // n8n award winners
 app.post('/weekly/clear-reward', weeklyChallenge.handleClearWeeklyReward);  // Clear pending reward
 
+// Expedition Map Routes (Dynamic weekly map configuration)
+const expeditionMap = require('./api/expedition-map');
+app.get('/expedition/map', expeditionMap.handleGetExpeditionMap);
+
 // Leaderboard Routes
 const leaderboard = require('./api/leaderboard');
 app.get('/daily/leaderboard', leaderboard.handleLeaderboard);
@@ -61,6 +65,12 @@ const leagueService = require('./api/league-service');
 app.post('/league/get-league', leagueService.handleGetLeague);
 app.post('/league/update-profile', leagueService.handleUpdateLeagueProfile);
 app.all('/league/process-weekly', leagueService.handleProcessWeeklyResults);  // n8n weekly trigger
+
+// Speed Swipe Routes (Dynamic word pairs from Firestore)
+const swipeService = require('./api/swipe-service');
+app.all('/swipe/refresh', swipeService.handleRefreshWords);  // n8n daily refresh
+app.get('/swipe/words', swipeService.handleGetWords);        // Fetch game words
+app.get('/swipe/stats', swipeService.handleGetStats);        // Monitor word counts
 
 // Other Routes
 app.all('/chat', wrapHandler('./api/chat'));
