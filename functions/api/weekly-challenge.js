@@ -318,7 +318,7 @@ Note: "direction" is "H" (Horizontal) or "V" (Vertical). Row/Col are 0-indexed. 
 
 async function handleWeeklyChallenge(req, res) {
     try {
-        const { userId } = req.query;
+        const { userId, dayId } = req.query;
 
         if (!userId) return res.status(400).json({ error: 'Missing userId' });
 
@@ -327,17 +327,36 @@ async function handleWeeklyChallenge(req, res) {
         const utcYear = today.getUTCFullYear();
         const utcMonth = today.getUTCMonth();
         const utcDate = today.getUTCDate();
-        const utcDay = today.getUTCDay();
-
-        // Puzzle ID is TODAY's date
-        const puzzleDate = new Date(Date.UTC(utcYear, utcMonth, utcDate)).toISOString().split('T')[0];
-        const puzzleId = puzzleDate;
+        const utcDay = today.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
 
         // Calculate week ID for weekly aggregation (Monday of current week)
         const daysFromMonday = utcDay === 0 ? 6 : utcDay - 1;
         const mondayDate = utcDate - daysFromMonday;
         const weekMonday = new Date(Date.UTC(utcYear, utcMonth, mondayDate));
         const weekId = weekMonday.toISOString().split('T')[0];
+
+        // Determine which puzzle date to load
+        let puzzleDate;
+        if (dayId !== undefined && dayId !== null) {
+            // Convert dayId (1=Mon, 7=Sun) to the actual date within this week
+            const requestedDayId = parseInt(dayId);
+            if (requestedDayId >= 1 && requestedDayId <= 7) {
+                // Calculate the date for the requested day
+                // Monday is day offset 0, Tuesday is 1, ..., Sunday is 6
+                const dayOffset = requestedDayId - 1;
+                const targetDate = new Date(Date.UTC(utcYear, utcMonth, mondayDate + dayOffset));
+                puzzleDate = targetDate.toISOString().split('T')[0];
+                console.log(`[WEEKLY-CHALLENGE] Loading puzzle for day ${requestedDayId}, date: ${puzzleDate}`);
+            } else {
+                // Invalid dayId, use today
+                puzzleDate = new Date(Date.UTC(utcYear, utcMonth, utcDate)).toISOString().split('T')[0];
+            }
+        } else {
+            // No dayId provided, use today's puzzle
+            puzzleDate = new Date(Date.UTC(utcYear, utcMonth, utcDate)).toISOString().split('T')[0];
+        }
+
+        const puzzleId = puzzleDate;
 
         const db = admin.firestore();
         const puzzleRef = db.collection('weeklyPuzzleCache').doc(puzzleId);
