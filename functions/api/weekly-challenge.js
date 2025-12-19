@@ -410,11 +410,34 @@ async function handleWeeklyChallenge(req, res) {
 
 async function handleWeeklyHint(req, res) {
     try {
-        const { userId, paidByAd } = req.body;
-        const puzzleDate = getCurrentPuzzleId();
+        const { userId, paidByAd, dayId } = req.body;
         const db = admin.firestore();
 
         if (!userId) return res.status(400).json({ success: false, error: 'Missing userId' });
+
+        // Calculate puzzle date based on dayId (if provided)
+        let puzzleDate;
+        if (dayId !== undefined && dayId !== null) {
+            const today = new Date();
+            const utcYear = today.getUTCFullYear();
+            const utcMonth = today.getUTCMonth();
+            const utcDate = today.getUTCDate();
+            const utcDay = today.getUTCDay();
+            const daysFromMonday = utcDay === 0 ? 6 : utcDay - 1;
+            const mondayDate = utcDate - daysFromMonday;
+
+            const requestedDayId = parseInt(dayId);
+            if (requestedDayId >= 1 && requestedDayId <= 7) {
+                const dayOffset = requestedDayId - 1;
+                const targetDate = new Date(Date.UTC(utcYear, utcMonth, mondayDate + dayOffset));
+                puzzleDate = targetDate.toISOString().split('T')[0];
+                console.log(`[WEEKLY-HINT] Using puzzle for day ${requestedDayId}, date: ${puzzleDate}`);
+            } else {
+                puzzleDate = getCurrentPuzzleId();
+            }
+        } else {
+            puzzleDate = getCurrentPuzzleId();
+        }
 
         const userRef = db.collection('users').doc(userId);
         const userDoc = await userRef.get();
@@ -567,11 +590,34 @@ async function handleWeeklyHint(req, res) {
  */
 async function handleWeeklyTip(req, res) {
     try {
-        const { userId, paidByAd } = req.body;
-        const puzzleDate = getCurrentPuzzleId();
+        const { userId, paidByAd, dayId } = req.body;
         const db = admin.firestore();
 
         if (!userId) return res.status(400).json({ success: false, error: 'Missing userId' });
+
+        // Calculate puzzle date based on dayId (if provided)
+        let puzzleDate;
+        if (dayId !== undefined && dayId !== null) {
+            const today = new Date();
+            const utcYear = today.getUTCFullYear();
+            const utcMonth = today.getUTCMonth();
+            const utcDate = today.getUTCDate();
+            const utcDay = today.getUTCDay();
+            const daysFromMonday = utcDay === 0 ? 6 : utcDay - 1;
+            const mondayDate = utcDate - daysFromMonday;
+
+            const requestedDayId = parseInt(dayId);
+            if (requestedDayId >= 1 && requestedDayId <= 7) {
+                const dayOffset = requestedDayId - 1;
+                const targetDate = new Date(Date.UTC(utcYear, utcMonth, mondayDate + dayOffset));
+                puzzleDate = targetDate.toISOString().split('T')[0];
+                console.log(`[WEEKLY-TIP] Using puzzle for day ${requestedDayId}, date: ${puzzleDate}`);
+            } else {
+                puzzleDate = getCurrentPuzzleId();
+            }
+        } else {
+            puzzleDate = getCurrentPuzzleId();
+        }
 
         // Get user document
         const userRef = db.collection('users').doc(userId);
