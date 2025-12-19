@@ -47,12 +47,35 @@ function latinize(text) {
 
 async function handleWeeklySubmitWord(req, res) {
     try {
-        const { userId, word } = req.body;
-        const puzzleDate = getCurrentPuzzleId();
+        const { userId, word, dayId } = req.body;
         const weekId = getCurrentWeekId();
         const db = admin.firestore();
 
         if (!userId || !word) return res.status(400).json({ success: false, error: 'Missing userId or word' });
+
+        // Calculate puzzle date based on dayId (if provided)
+        let puzzleDate;
+        if (dayId !== undefined && dayId !== null) {
+            const today = new Date();
+            const utcYear = today.getUTCFullYear();
+            const utcMonth = today.getUTCMonth();
+            const utcDate = today.getUTCDate();
+            const utcDay = today.getUTCDay();
+            const daysFromMonday = utcDay === 0 ? 6 : utcDay - 1;
+            const mondayDate = utcDate - daysFromMonday;
+
+            const requestedDayId = parseInt(dayId);
+            if (requestedDayId >= 1 && requestedDayId <= 7) {
+                const dayOffset = requestedDayId - 1;
+                const targetDate = new Date(Date.UTC(utcYear, utcMonth, mondayDate + dayOffset));
+                puzzleDate = targetDate.toISOString().split('T')[0];
+                console.log(`[WEEKLY-SUBMIT] Using puzzle for day ${requestedDayId}, date: ${puzzleDate}`);
+            } else {
+                puzzleDate = getCurrentPuzzleId();
+            }
+        } else {
+            puzzleDate = getCurrentPuzzleId();
+        }
 
         const guessWord = latinize(word);
         const cacheRef = db.collection('weeklyPuzzleCache').doc(puzzleDate);
