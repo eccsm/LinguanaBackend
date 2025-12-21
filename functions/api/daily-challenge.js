@@ -456,33 +456,47 @@ async function handleSubmitScore(req, res) {
 
             if (username) updateData.username = username;
 
-            if (!completed && savedProgress) {
-                updateData.savedProgress = savedProgress;
-            } else {
+            // Handle savedProgress based on completion state
+            if (completed && !savedProgress) {
+                // User finished all questions - clear any saved progress and mark complete
                 updateData.savedProgress = admin.firestore.FieldValue.delete();
-            }
-
-            if (completed || (!savedProgress && !completed)) {
                 updateData.completed = true;
+                console.log(`[DAILY-SUBMIT] Challenge COMPLETED - clearing savedProgress, score: ${score}`);
+            } else if (savedProgress) {
+                // User is saving in-progress state (either mid-game or failed)
+                updateData.savedProgress = savedProgress;
+                // Keep completed: false for in-progress saves
+                if (!completed) {
+                    updateData.completed = false;
+                }
+                console.log(`[DAILY-SUBMIT] Saving progress - lives: ${savedProgress.lives}, score: ${score}`);
+            } else if (!completed && !savedProgress) {
+                // Edge case: no progress and not completed = treat as incomplete
+                updateData.completed = false;
+                console.log(`[DAILY-SUBMIT] Edge case - no progress, not completed`);
             }
 
             await existingDoc.ref.update(updateData);
         } else {
+            // New submission
             const newSubmission = {
                 userId, displayName: displayName || 'Anonymous', username: username || null,
                 date: today, score, maxScore, completionTime, correctAnswers, wrongAnswers,
-                usedAdContinue, completed: completed || (!savedProgress && !completed),
+                usedAdContinue, completed: completed && !savedProgress, // Only complete if no progress
                 avatar, timestamp: FieldValue.serverTimestamp(),
             };
 
-            if (!completed && savedProgress) {
+            // Save progress if provided (for in-progress states)
+            if (savedProgress) {
                 newSubmission.savedProgress = savedProgress;
             }
 
+            console.log(`[DAILY-SUBMIT] New submission - completed: ${newSubmission.completed}, score: ${score}`);
             await db.collection('dailyChallengeScores').add(newSubmission);
         }
 
-        if (completed) {
+        // Only update streak for successful completions (finished all questions)
+        if (completed && !savedProgress) {
             const userRef = db.collection('users').doc(userId);
             const userDoc = await userRef.get();
 
