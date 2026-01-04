@@ -82,6 +82,7 @@ async function handleGetExpeditionMap(req, res) {
         // Fetch user's completed days for this week from weeklyScores
         // This is the source of truth - check actual completed game records
         let completedDays = [];
+        let unlockedDays = [];
         try {
             // Query weeklyScores for this user's completed puzzles this week
             const scoresSnapshot = await admin.firestore()
@@ -106,7 +107,9 @@ async function handleGetExpeditionMap(req, res) {
                 });
             }
 
-            // Also check users/{userId}.weeklyCompletedDays as fallback
+            // Also check users/{userId} for weeklyCompletedDays and weeklyUnlockedDays as fallback
+            // BUT only if the stored weekId matches current week (prevents stale data)
+
             const userDoc = await admin.firestore()
                 .collection('users')
                 .doc(userId)
@@ -114,13 +117,34 @@ async function handleGetExpeditionMap(req, res) {
 
             if (userDoc.exists) {
                 const userData = userDoc.data();
-                const userCompletedDays = userData.weeklyCompletedDays || [];
-                // Merge with existing (avoid duplicates)
-                userCompletedDays.forEach(day => {
-                    if (!completedDays.includes(day)) {
-                        completedDays.push(day);
-                    }
-                });
+                const storedWeekId = userData.weeklyCompletedWeekId;
+                const hasStaleData = userData.weeklyCompletedDays?.length > 0 || userData.weeklyUnlockedDays?.length > 0;
+
+                // Only use stored data if it's from the current week
+                if (storedWeekId === weekId) {
+                    const userCompletedDays = userData.weeklyCompletedDays || [];
+                    // Merge with existing (avoid duplicates)
+                    userCompletedDays.forEach(day => {
+                        if (!completedDays.includes(day)) {
+                            completedDays.push(day);
+                        }
+                    });
+                    // Get unlocked days from user document
+                    unlockedDays = userData.weeklyUnlockedDays || [];
+                } else if (hasStaleData && storedWeekId !== weekId) {
+                    // Old week data OR missing weekId - clear it asynchronously (don't wait)
+                    // This handles legacy data that was stored without a weekId
+                    console.log(`[EXPEDITION] Clearing stale week data for user ${userId}. Old weekId: ${storedWeekId || 'none'}, Current: ${weekId}`);
+                    admin.firestore()
+                        .collection('users')
+                        .doc(userId)
+                        .update({
+                            weeklyCompletedDays: [],
+                            weeklyUnlockedDays: [],
+                            weeklyCompletedWeekId: weekId,
+                        })
+                        .catch(err => console.log('Failed to clear old week data:', err));
+                }
             }
 
             // Sort for consistent display
@@ -135,6 +159,7 @@ async function handleGetExpeditionMap(req, res) {
             nodes,
             currentDayUTC,
             completedDays,
+            unlockedDays,
             theme,
         });
 

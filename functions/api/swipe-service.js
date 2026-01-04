@@ -66,12 +66,37 @@ async function handleRefreshWords(req, res) {
         const db = admin.firestore();
         const collection = db.collection('dailySwipeWords');
 
-        // Step 1: Delete all existing documents
+        // Step 1: Delete all existing documents using batched deletes
+        // (Individual deletes can timeout with large datasets)
         console.log('[SWIPE] Clearing existing words...');
         const existingDocs = await collection.get();
-        const deletePromises = existingDocs.docs.map(doc => doc.ref.delete());
-        await Promise.all(deletePromises);
-        console.log(`[SWIPE] Deleted ${existingDocs.size} existing documents`);
+
+        if (existingDocs.size > 0) {
+            const deleteBatches = [];
+            let deleteBatch = db.batch();
+            let deleteCount = 0;
+
+            for (const doc of existingDocs.docs) {
+                deleteBatch.delete(doc.ref);
+                deleteCount++;
+
+                if (deleteCount >= 500) {
+                    deleteBatches.push(deleteBatch);
+                    deleteBatch = db.batch();
+                    deleteCount = 0;
+                }
+            }
+
+            if (deleteCount > 0) {
+                deleteBatches.push(deleteBatch);
+            }
+
+            // Execute delete batches
+            await Promise.all(deleteBatches.map(batch => batch.commit()));
+            console.log(`[SWIPE] Deleted ${existingDocs.size} existing documents in ${deleteBatches.length} batches`);
+        } else {
+            console.log('[SWIPE] No existing documents to delete');
+        }
 
         // Step 2: Transform and insert new words
         // For each row, create pairs for each language combination (English as source)

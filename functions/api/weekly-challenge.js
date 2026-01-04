@@ -481,9 +481,34 @@ async function handleWeeklyHint(req, res) {
         const puzzle = puzzleDoc.data();
         const progress = progressDoc.exists ? progressDoc.data() : { foundWords: [], revealedCells: [] };
 
+        // Defensive null-checks: ensure foundWords and revealedCells are always arrays
+        // (existing Firestore docs may not have these fields initialized)
+        if (!progress.foundWords) progress.foundWords = [];
+        if (!progress.revealedCells) progress.revealedCells = [];
+
         // Find all unrevealed cells in undiscovered words
+        // We need to exclude:
+        // 1. Cells explicitly revealed by hints (in revealedCells)
+        // 2. Cells that belong to already-found words (shown when word was found)
         const unrevealedCells = [];
-        const revealedSet = new Set(progress.revealedCells || []);
+        const revealedSet = new Set(progress.revealedCells);
+
+        // Build a set of all cells from found words (these are visible even without hints)
+        const foundWordCells = new Set();
+        puzzle.words.forEach(wordObj => {
+            if (progress.foundWords.includes(wordObj.word)) {
+                // Add all cells of this found word to the exclusion set
+                if (wordObj.direction === 'H') {
+                    for (let i = 0; i < wordObj.word.length; i++) {
+                        foundWordCells.add(`${wordObj.row},${wordObj.col + i}`);
+                    }
+                } else {
+                    for (let i = 0; i < wordObj.word.length; i++) {
+                        foundWordCells.add(`${wordObj.row + i},${wordObj.col}`);
+                    }
+                }
+            }
+        });
 
         puzzle.words.forEach(wordObj => {
             if (progress.foundWords.includes(wordObj.word)) return; // Skip found words
@@ -492,7 +517,8 @@ async function handleWeeklyHint(req, res) {
             if (wordObj.direction === 'H') {
                 for (let i = 0; i < wordObj.word.length; i++) {
                     const cellKey = `${wordObj.row},${wordObj.col + i}`;
-                    if (!revealedSet.has(cellKey)) {
+                    // Skip if already revealed by hints OR visible from a found word
+                    if (!revealedSet.has(cellKey) && !foundWordCells.has(cellKey)) {
                         unrevealedCells.push({
                             row: wordObj.row,
                             col: wordObj.col + i,
@@ -504,7 +530,8 @@ async function handleWeeklyHint(req, res) {
             } else {
                 for (let i = 0; i < wordObj.word.length; i++) {
                     const cellKey = `${wordObj.row + i},${wordObj.col}`;
-                    if (!revealedSet.has(cellKey)) {
+                    // Skip if already revealed by hints OR visible from a found word
+                    if (!revealedSet.has(cellKey) && !foundWordCells.has(cellKey)) {
                         unrevealedCells.push({
                             row: wordObj.row + i,
                             col: wordObj.col,
@@ -537,6 +564,7 @@ async function handleWeeklyHint(req, res) {
         newRevealedSet.add(targetCell.key);
 
         // Check if any words are now fully revealed by hints
+        // A cell is "visible" if it's in revealedSet (hint-revealed) OR foundWordCells (from found words)
         const foundWordsByHint = [];
         let pointsEarned = 0;
         const existingFoundWords = progress.foundWords || [];
@@ -544,12 +572,13 @@ async function handleWeeklyHint(req, res) {
         puzzle.words.forEach(wordObj => {
             if (existingFoundWords.includes(wordObj.word)) return; // Skip already found words
 
-            // Check if all cells of this word are revealed
+            // Check if all cells of this word are visible (revealed by hints OR part of found words)
             let allCellsRevealed = true;
             if (wordObj.direction === 'H') {
                 for (let i = 0; i < wordObj.word.length; i++) {
                     const cellKey = `${wordObj.row},${wordObj.col + i}`;
-                    if (!newRevealedSet.has(cellKey)) {
+                    // Cell is visible if revealed by hint OR visible from a found word
+                    if (!newRevealedSet.has(cellKey) && !foundWordCells.has(cellKey)) {
                         allCellsRevealed = false;
                         break;
                     }
@@ -557,7 +586,8 @@ async function handleWeeklyHint(req, res) {
             } else {
                 for (let i = 0; i < wordObj.word.length; i++) {
                     const cellKey = `${wordObj.row + i},${wordObj.col}`;
-                    if (!newRevealedSet.has(cellKey)) {
+                    // Cell is visible if revealed by hint OR visible from a found word
+                    if (!newRevealedSet.has(cellKey) && !foundWordCells.has(cellKey)) {
                         allCellsRevealed = false;
                         break;
                     }
@@ -1180,6 +1210,7 @@ function generateGridFromWords(wordObjects, letters) {
     /**
      * Check if placing a word would create invalid adjacencies
      * Words should only touch at valid intersection points, never visually merge
+     * Non-intersecting cells must have NO adjacent occupied cells (1-cell gap rule)
      */
     const checkAdjacency = (word, row, col, direction) => {
         const len = word.length;
@@ -1200,24 +1231,21 @@ function generateGridFromWords(wordObjects, letters) {
                 return false;
             }
 
-            // Check parallel adjacency for non-intersection cells
-            if (direction === 'H') {
-                // Check above and below for non-intersection cells
-                if (!existingCell) {
+            // For non-intersection cells, ensure NO adjacent cells exist at all
+            // This prevents visual merging like "MOT" + "EAT" = "MEAT"
+            if (!existingCell) {
+                if (direction === 'H') {
+                    // Check above and below for ANY occupied cell
                     const above = getCell(r - 1, c);
                     const below = getCell(r + 1, c);
-                    // If there's a horizontal word adjacent, it's invalid
-                    if (above && above.direction === 'H') return false;
-                    if (below && below.direction === 'H') return false;
-                }
-            } else {
-                // Check left and right for non-intersection cells
-                if (!existingCell) {
+                    if (above) return false;
+                    if (below) return false;
+                } else {
+                    // Check left and right for ANY occupied cell
                     const left = getCell(r, c - 1);
                     const right = getCell(r, c + 1);
-                    // If there's a vertical word adjacent, it's invalid
-                    if (left && left.direction === 'V') return false;
-                    if (right && right.direction === 'V') return false;
+                    if (left) return false;
+                    if (right) return false;
                 }
             }
         }
@@ -1226,44 +1254,9 @@ function generateGridFromWords(wordObjects, letters) {
         if (direction === 'H') {
             if (getCell(row, col - 1)) return false; // Cell before
             if (getCell(row, col + len)) return false; // Cell after
-
-            // **NEW**: Check corner cells to prevent visual merging
-            // If there's a vertical word ending just before this word starts,
-            // it will visually appear to merge (like "AVERO" instead of "VERO")
-            const cornerTopLeft = getCell(row - 1, col - 1);
-            const cornerBottomLeft = getCell(row + 1, col - 1);
-            const cornerTopRight = getCell(row - 1, col + len);
-            const cornerBottomRight = getCell(row + 1, col + len);
-
-            // Check if a vertical word ends/starts adjacent to our word's start/end
-            if (cornerTopLeft && cornerTopLeft.direction === 'V') {
-                // Check if there's a cell directly above our start that connects
-                const cellAboveStart = getCell(row - 1, col);
-                if (!cellAboveStart) return false; // Would create visual merge
-            }
-            if (cornerBottomLeft && cornerBottomLeft.direction === 'V') {
-                const cellBelowStart = getCell(row + 1, col);
-                if (!cellBelowStart) return false;
-            }
         } else {
             if (getCell(row - 1, col)) return false; // Cell before
             if (getCell(row + len, col)) return false; // Cell after
-
-            // **NEW**: Check corner cells for vertical words
-            const cornerTopLeft = getCell(row - 1, col - 1);
-            const cornerTopRight = getCell(row - 1, col + 1);
-            const cornerBottomLeft = getCell(row + len, col - 1);
-            const cornerBottomRight = getCell(row + len, col + 1);
-
-            // Check if a horizontal word ends/starts adjacent to our word's start/end
-            if (cornerTopLeft && cornerTopLeft.direction === 'H') {
-                const cellLeftOfStart = getCell(row, col - 1);
-                if (!cellLeftOfStart) return false;
-            }
-            if (cornerTopRight && cornerTopRight.direction === 'H') {
-                const cellRightOfStart = getCell(row, col + 1);
-                if (!cellRightOfStart) return false;
-            }
         }
 
         return true;

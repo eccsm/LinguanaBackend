@@ -18,19 +18,27 @@ const LEAGUE_TIERS = {
     master: { name: 'Master', minScore: 700, icon: '👑', color: '#9B59B6' },
 };
 
-const LEAGUE_SIZE = 30;
-const MIN_REAL_USERS = 5;
+const LEAGUE_SIZE = 10;
+const MIN_REAL_USERS = 3;
 
 /**
- * Get the current week ID in format YYYY-WW
+ * Get the current week ID using ISO week date system (weeks start on Monday)
  */
 function getWeekId() {
     const now = new Date();
-    const start = new Date(now.getFullYear(), 0, 1);
-    const diff = now - start;
-    const oneWeek = 1000 * 60 * 60 * 24 * 7;
-    const weekNum = Math.floor(diff / oneWeek) + 1;
-    return `${now.getFullYear()}-W${weekNum.toString().padStart(2, '0')}`;
+
+    // Get the Thursday of the current week (ISO 8601 - week belongs to year of its Thursday)
+    const thursday = new Date(now);
+    thursday.setDate(now.getDate() - ((now.getDay() + 6) % 7) + 3);
+
+    // Get the first Thursday of the year
+    const firstThursday = new Date(thursday.getFullYear(), 0, 4);
+    firstThursday.setDate(firstThursday.getDate() - ((firstThursday.getDay() + 6) % 7) + 3);
+
+    // Calculate the week number
+    const weekNum = Math.floor((thursday - firstThursday) / (7 * 24 * 60 * 60 * 1000)) + 1;
+
+    return `${thursday.getFullYear()}-W${weekNum.toString().padStart(2, '0')}`;
 }
 
 /**
@@ -46,21 +54,18 @@ function getUserTier(score) {
 
 /**
  * Generate mock users with scores around a target range
+ * Mock users have LOWER scores to make league beatable
  */
 function generateMockUsers(count, minScore, maxScore) {
     const mocks = [];
-    // Calculate days since Monday for daily progression
-    const now = new Date();
-    const dayOfWeek = now.getUTCDay(); // 0=Sunday
-    const daysSinceMon = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-    const dailyBonus = daysSinceMon * 5; // +5 per day
-
     // Shuffle names to get variety
     const shuffledNames = [...MOCK_NAMES].sort(() => Math.random() - 0.5);
 
     for (let i = 0; i < count; i++) {
-        const baseScore = Math.floor(Math.random() * (maxScore - minScore)) + minScore;
-        const score = baseScore + dailyBonus;
+        // Reduced score range - no daily bonus, 30-80% of max
+        const reducedMin = Math.max(0, Math.floor(minScore * 0.3));
+        const reducedMax = Math.floor(maxScore * 0.8);
+        const score = Math.floor(Math.random() * (reducedMax - reducedMin)) + reducedMin;
         mocks.push({
             displayName: shuffledNames[i % shuffledNames.length],
             avatar: null,
@@ -90,8 +95,11 @@ function getAdjacentTier(tier) {
     return null;
 }
 
+// Import cluster service
+const clusterService = require('./league-cluster-service');
+
 /**
- * Main league fetching handler
+ * Main league fetching handler - uses permanent weekly clusters
  */
 async function handleGetLeague(req, res) {
     try {
@@ -102,186 +110,79 @@ async function handleGetLeague(req, res) {
         }
 
         const db = admin.firestore();
-        const weekId = getWeekId();
 
-        // Get all weekly scores for current week
-        const scoresSnapshot = await db
+        // Get user's profile for display info and XP
+        const userDoc = await db.collection('users').doc(userId).get();
+        if (!userDoc.exists) {
+            return res.status(404).json({ success: false, error: 'User not found' });
+        }
+
+        const userData = userDoc.data();
+        const displayName = userData.username || userData.displayName || 'Player';
+        const avatar = userData.equippedAvatar || userData.avatar || null;
+        const userTotalXP = userData.xp || 0;
+
+        // Get user's weekly score
+        const weekId = clusterService.getWeekId();
+        const weeklyScoreDoc = await db
             .collection('weeklyAggregatedScores')
-            .where('weekId', '==', weekId)
-            .orderBy('totalScore', 'desc')
+            .doc(`${weekId}_${userId}`)
             .get();
 
-        // Get requesting user's score
-        let userScore = 0;
-        let userDoc = null;
+        const userWeeklyScore = weeklyScoreDoc.exists
+            ? (weeklyScoreDoc.data().totalScore || 0)
+            : 0;
 
-        scoresSnapshot.docs.forEach(doc => {
-            if (doc.data().userId === userId) {
-                userScore = doc.data().totalScore || 0;
-                userDoc = doc.data();
-            }
-        });
+        // Get or create user's cluster
+        const cluster = await clusterService.getUserCluster(userId, displayName, avatar, userTotalXP);
 
-        // Determine user's tier
-        const userTier = getUserTier(userScore);
-        const tierConfig = LEAGUE_TIERS[userTier];
+        if (!cluster) {
+            return res.status(500).json({ success: false, error: 'Failed to get cluster' });
+        }
 
-        // Get tier score boundaries
-        const tierOrder = ['bronze', 'silver', 'gold', 'diamond', 'master'];
-        const tierIndex = tierOrder.indexOf(userTier);
-        const minTierScore = tierConfig.minScore;
-        const maxTierScore = tierIndex < tierOrder.length - 1
-            ? LEAGUE_TIERS[tierOrder[tierIndex + 1]].minScore
-            : 9999;
+        // Update user's current score and profile in cluster if changed
+        const userInCluster = cluster.users.find(u => u.userId === userId);
+        if (userInCluster) {
+            const needsScoreUpdate = userInCluster.weeklyScore !== userWeeklyScore;
+            const needsProfileUpdate = userInCluster.displayName !== displayName || userInCluster.avatar !== avatar;
 
-        // Filter users in the same tier
-        // First get all user IDs to fetch their usernames
-        const userIds = scoresSnapshot.docs
-            .map(doc => doc.data().userId)
-            .filter(id => id && !id.startsWith('mock_'));
-
-        // Fetch usernames from users collection
-        const usernameMap = {};
-        if (userIds.length > 0) {
-            // Batch fetch users (max 10 at a time for Firestore 'in' query)
-            for (let i = 0; i < userIds.length; i += 10) {
-                const batch = userIds.slice(i, i + 10);
-                const usersSnapshot = await db.collection('users')
-                    .where(admin.firestore.FieldPath.documentId(), 'in', batch)
-                    .get();
-                usersSnapshot.docs.forEach(doc => {
-                    const userData = doc.data();
-                    // Prefer username over displayName
-                    usernameMap[doc.id] = userData.username || userData.displayName || 'Player';
+            if (needsScoreUpdate || needsProfileUpdate) {
+                // Update in database
+                await clusterService.updateUserInCluster(userId, {
+                    weeklyScore: userWeeklyScore,
+                    displayName: displayName,
+                    avatar: avatar,
                 });
+
+                // Update local data
+                userInCluster.weeklyScore = userWeeklyScore;
+                userInCluster.displayName = displayName;
+                userInCluster.avatar = avatar;
+
+                // Re-sort after score update
+                cluster.users.sort((a, b) => b.weeklyScore - a.weeklyScore);
+                // Re-assign ranks
+                const hasDemotion = cluster.tierKey !== 'bronze';
+                cluster.users = cluster.users.map((user, index) => ({
+                    ...user,
+                    rank: index + 1,
+                    zone: index < 3 ? 'promotion' : (hasDemotion && index >= 7 ? 'demotion' : 'safe'),
+                }));
             }
         }
 
-        let realUsers = scoresSnapshot.docs
-            .map(doc => ({
-                userId: doc.data().userId,
-                displayName: usernameMap[doc.data().userId] || doc.data().displayName || 'Player',
-                avatar: doc.data().avatar || null,
-                weeklyScore: doc.data().totalScore || 0,
-                isRealUser: true,
-            }))
-            .filter(u => {
-                const tier = getUserTier(u.weeklyScore);
-                return tier === userTier;
-            });
-
-        console.log(`[LEAGUE] Found ${realUsers.length} real users in ${userTier} tier`);
-
-        // If not enough real users, try merging with adjacent tier
-        if (realUsers.length < MIN_REAL_USERS) {
-            const adjacentTier = getAdjacentTier(userTier);
-            if (adjacentTier) {
-                const additionalUsers = scoresSnapshot.docs
-                    .map(doc => ({
-                        userId: doc.data().userId,
-                        displayName: usernameMap[doc.data().userId] || doc.data().displayName || 'Player',
-                        avatar: doc.data().avatar || null,
-                        weeklyScore: doc.data().totalScore || 0,
-                        isRealUser: true,
-                    }))
-                    .filter(u => {
-                        const tier = getUserTier(u.weeklyScore);
-                        return tier === adjacentTier;
-                    });
-
-                realUsers = [...realUsers, ...additionalUsers];
-                console.log(`[LEAGUE] Merged with ${adjacentTier}, now ${realUsers.length} real users`);
-            }
-        }
-
-        // Sort by score descending
-        realUsers.sort((a, b) => b.weeklyScore - a.weeklyScore);
-
-        // Limit to top LEAGUE_SIZE real users
-        if (realUsers.length > LEAGUE_SIZE) {
-            realUsers = realUsers.slice(0, LEAGUE_SIZE);
-        }
-
-        // Calculate how many mocks needed
-        const mocksNeeded = LEAGUE_SIZE - realUsers.length;
-
-        let league = [...realUsers];
-
-        if (mocksNeeded > 0) {
-            // Calculate score ranges for mocks based on tier
-            const scoreRange = {
-                min: Math.max(0, minTierScore),
-                max: maxTierScore,
-            };
-
-            // Generate mocks - some above and some below the user
-            const mocksAbove = Math.floor(mocksNeeded * 0.4);
-            const mocksBelow = mocksNeeded - mocksAbove;
-
-            // Mocks above user (higher scores)
-            const highMocks = generateMockUsers(
-                mocksAbove,
-                userScore + 5,
-                Math.min(userScore + 100, scoreRange.max)
-            );
-
-            // Mocks below user (lower scores)
-            const lowMocks = generateMockUsers(
-                mocksBelow,
-                scoreRange.min,
-                Math.max(userScore - 5, scoreRange.min + 10)
-            );
-
-            league = [...highMocks, ...realUsers, ...lowMocks];
-        }
-
-        // Sort final league by score
-        league.sort((a, b) => b.weeklyScore - a.weeklyScore);
-
-        // Assign ranks and zones
-        // Bronze league (lowest tier) has no demotion zone
-        const hasDemotion = userTier !== 'bronze';
-        league = league.map((user, index) => ({
-            ...user,
-            rank: index + 1,
-            zone: index < 5 ? 'promotion' : (hasDemotion && index >= 25 ? 'demotion' : 'safe'),
-        }));
-
-        // Find user's rank
-        const userRank = league.findIndex(u => u.userId === userId) + 1;
-
-        // Ensure current user is in the league
-        if (userRank === 0 && userDoc) {
-            // User not in league, add them
-            const currentUser = {
-                userId: userId,
-                displayName: userDoc.displayName || 'You',
-                avatar: userDoc.avatar || null,
-                weeklyScore: userScore,
-                isRealUser: true,
-                rank: league.length + 1,
-                zone: 'safe',
-            };
-            league.push(currentUser);
-            league.sort((a, b) => b.weeklyScore - a.weeklyScore);
-            league = league.map((user, index) => ({
-                ...user,
-                rank: index + 1,
-                zone: index < 5 ? 'promotion' : (hasDemotion && index >= 25 ? 'demotion' : 'safe'),
-            }));
-        }
+        const userRank = cluster.users.findIndex(u => u.userId === userId) + 1;
 
         return res.json({
             success: true,
-            league,
-            userRank: league.findIndex(u => u.userId === userId) + 1,
-            tier: {
-                key: userTier,
-                ...tierConfig,
-            },
-            realUserCount: realUsers.length,
-            mockUserCount: mocksNeeded > 0 ? mocksNeeded : 0,
-            weekId,
+            league: cluster.users,
+            userRank: userRank,
+            tier: cluster.tier,
+            tierKey: cluster.tierKey,
+            clusterId: cluster.clusterId,
+            realUserCount: cluster.realUserCount,
+            mockUserCount: LEAGUE_SIZE - cluster.realUserCount,
+            weekId: cluster.weekId,
         });
 
     } catch (error) {

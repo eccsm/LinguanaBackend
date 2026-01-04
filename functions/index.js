@@ -62,9 +62,19 @@ app.all('/daily/award-winner', leaderboard.handleAwardWinner);  // GET or POST f
 
 // League Routes (Smart matching with real + mock users)
 const leagueService = require('./api/league-service');
+const clusterService = require('./api/league-cluster-service');
 app.post('/league/get-league', leagueService.handleGetLeague);
 app.post('/league/update-profile', leagueService.handleUpdateLeagueProfile);
 app.all('/league/process-weekly', leagueService.handleProcessWeeklyResults);  // n8n weekly trigger
+app.all('/league/reset-clusters', async (req, res) => {  // n8n weekly cluster reset
+    try {
+        const result = await clusterService.resetWeeklyClusters();
+        res.json({ success: true, ...result });
+    } catch (error) {
+        console.error('[CLUSTER] Reset error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 
 // Speed Swipe Routes (Dynamic word pairs from Firestore)
 const swipeService = require('./api/swipe-service');
@@ -84,6 +94,11 @@ app.all('/extract-vocabulary', wrapHandler('./api/extract-vocabulary'));
 app.all('/grant-rewards', wrapHandler('./api/grant-rewards'));
 app.all('/app-ads', wrapHandler('./api/app-ads'));
 app.all('/app-ads.txt', wrapHandler('./api/app-ads'));
+
+// Feedback Routes
+const feedbackService = require('./api/feedback-service');
+app.post('/feedback/submit', feedbackService.handleSubmitFeedback);
+app.get('/feedback/list', feedbackService.handleGetFeedback);  // Admin only
 
 // Export the Express app as a Cloud Function named 'api'
 const { onRequest } = require('firebase-functions/v2/https');
