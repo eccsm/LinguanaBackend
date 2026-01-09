@@ -22,12 +22,27 @@ async function handleLeaderboard(req, res) {
 
         const snapshot = await query.get();
 
+        // Fetch current user data for all users in leaderboard
+        // This ensures we display the current username, not the stale one from score time
+        const userIds = snapshot.docs.map(doc => doc.data().userId);
+        const userDocs = await Promise.all(
+            userIds.map(uid => db.collection('users').doc(uid).get())
+        );
+        const userDataMap = {};
+        userDocs.forEach(doc => {
+            if (doc.exists) {
+                userDataMap[doc.id] = doc.data();
+            }
+        });
+
         const leaderboardData = snapshot.docs.map((doc) => {
             const data = doc.data();
+            const currentUser = userDataMap[data.userId] || {};
             return {
                 userId: data.userId,
-                displayName: data.displayName || 'Anonymous',
-                username: data.username || null,
+                // Use current username from users collection, fall back to score document data
+                displayName: currentUser.displayName || currentUser.username || data.displayName || 'Anonymous',
+                username: currentUser.username || data.username || null,
                 score: data.score,
                 maxScore: data.maxScore,
                 percentage: Math.round((data.score / data.maxScore) * 100),
@@ -36,7 +51,8 @@ async function handleLeaderboard(req, res) {
                 wrongAnswers: data.wrongAnswers,
                 usedAdContinue: data.usedAdContinue || false,
                 completed: data.completed || false,
-                avatar: data.avatar || null,
+                // Use current avatar from users collection
+                avatar: currentUser.equippedAvatar || data.avatar || null,
                 timestamp: data.timestamp,
             };
         });
