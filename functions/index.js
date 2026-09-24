@@ -1,13 +1,11 @@
 // require('dotenv').config();
 const functions = require('firebase-functions');
-const admin = require('firebase-admin');
 const express = require('express');
 const cors = require('cors');
+const { initializeFirebase } = require('./utils/firebaseInit');
 
 // Initialize Firebase Admin once
-if (admin.apps.length === 0) {
-    admin.initializeApp();
-}
+initializeFirebase();
 
 const app = express();
 
@@ -115,3 +113,14 @@ exports.api = onRequest({
         'N8N_WEBHOOK_SECRET'
     ]
 }, app);
+
+// Native Firebase schedules replace the former n8n cron workflows.
+// They reuse the existing handlers, so the mobile API and Firestore schemas
+// remain unchanged.
+const scheduledTasks = require('./scheduled-tasks');
+exports.generateGameContent = scheduledTasks.generateGameContent;
+exports.awardDailyWinners = scheduledTasks.awardDailyWinners;
+exports.awardWeeklyWinners = scheduledTasks.awardWeeklyWinners;
+exports.sendDailyChallengeReminders = scheduledTasks.sendDailyChallengeReminders;
+exports.sendStreakReminders = scheduledTasks.sendStreakReminders;
+exports.processWeeklyLeagueResults = scheduledTasks.processWeeklyLeagueResults;

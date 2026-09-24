@@ -172,49 +172,33 @@ async function handleWeeklySubmitWord(req, res) {
     }
 }
 
-async function generateWeeklyPuzzleWords() {
+async function generateWeeklyPuzzleWords(retryCount = 0) {
     try {
         const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
         if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing');
 
         console.log('[WEEKLY-PUZZLE] Generating MIXED-LANGUAGE puzzle words...');
-        const prompt = `Generate a multilingual Wordscapes-style crossword puzzle.
+        const prompt = `Generate word candidates for a multilingual Wordscapes-style puzzle.
 
 Requirements:
 1. Pick a 7-8 letter "root word" (e.g. "ORATION", "CREATION") in English, Spanish, French, German, Italian, Portuguese, or Turkish.
 2. The "letters" pool must be the scrambled letters of this root word.
-3. Find 8-12 valid words that can be formed using ONLY the letters in the pool.
+3. Find 12-16 UNIQUE valid words that can be formed using ONLY the letters in the pool, respecting how many times each letter occurs.
 4. The words can be from ANY of these languages: English, Spanish, French, German, Italian, Portuguese, Turkish. Mix them up!
-5. Words must be 3-7 letters long.
+5. Words must be 3-8 letters long and use Latin letters only.
 6. No slang, no offensive words.
-
-**CRITICAL CONNECTIVITY RULES:**
-- ALL words must be connected like a real crossword puzzle
-- The first word (longest) should be placed horizontally in the middle of the grid (e.g., row 3, col 0)
-- Each subsequent word MUST share at least one letter cell with an existing word
-- Words crossing each other must have the SAME letter at the intersection point
-- Plan intersections carefully: vertical words should cross horizontal words at shared letters
-- Aim for a compact grid (max 8x8) with tight connections
-
-Example of proper connectivity for "ORATION" letters:
-- RATION at row 2, col 0, H (horizontal, the anchor word)
-- RAIN at row 1, col 0, V (shares R at row 2, col 0)
-- RIOT at row 2, col 3, V (shares I at row 2, col 3)
-- ORAL at row 4, col 2, H (shares A at row 4, col 3)
 
 Return JSON format ONLY:
 {
   "letters": ["O", "R", "A", "T", "I", "O", "N"],
   "words": [
-    {"word": "RATION", "lang": "en", "row": 2, "col": 0, "direction": "H", "points": 15},
-    {"word": "RAIN", "lang": "en", "row": 1, "col": 0, "direction": "V", "points": 10},
-    {"word": "RIOT", "lang": "en", "row": 2, "col": 3, "direction": "V", "points": 10},
-    {"word": "ORAL", "lang": "en", "row": 4, "col": 2, "direction": "H", "points": 10},
-    {"word": "ART", "lang": "en", "row": 3, "col": 2, "direction": "V", "points": 8},
-    {"word": "TAN", "lang": "en", "row": 5, "col": 4, "direction": "H", "points": 8}
+    {"word": "RATION", "lang": "en", "points": 25},
+    {"word": "RAIN", "lang": "en", "points": 10},
+    {"word": "RIOT", "lang": "en", "points": 10},
+    {"word": "ART", "lang": "en", "points": 8}
   ]
 }
-Note: "direction" is "H" (Horizontal) or "V" (Vertical). Row/Col are 0-indexed. Ensure ALL words connect!`;
+The backend will calculate all crossword coordinates. Do not include row, col, or direction.`;
 
         const response = await axios.post(
             'https://api.openai.com/v1/chat/completions',
@@ -224,7 +208,8 @@ Note: "direction" is "H" (Horizontal) or "V" (Vertical). Row/Col are 0-indexed. 
                     { role: 'system', content: 'Generate word puzzles. Return ONLY valid JSON.' },
                     { role: 'user', content: prompt }
                 ],
-                temperature: 0.9,
+                response_format: { type: 'json_object' },
+                temperature: 0.4,
                 max_tokens: 2000,
             },
             {
@@ -240,97 +225,55 @@ Note: "direction" is "H" (Horizontal) or "V" (Vertical). Row/Col are 0-indexed. 
 
         if (!jsonMatch) throw new Error('Failed to extract JSON');
 
-        const puzzle = JSON.parse(jsonMatch[0]);
+        const generated = JSON.parse(jsonMatch[0]);
+        const letters = Array.isArray(generated.letters)
+            ? generated.letters.map(l => latinize(String(l)).charAt(0).toUpperCase()).filter(Boolean)
+            : [];
 
-        puzzle.letters = puzzle.letters.map(l => latinize(l).charAt(0).toUpperCase());
-        puzzle.words = puzzle.words.map(w => ({
-            word: latinize(w.word).toUpperCase(),
-            lang: w.lang || 'en',
-            row: w.row,
-            col: w.col,
-            direction: w.direction,
-            points: (typeof w.points === 'number' ? w.points : parseInt(w.points)) ||
-                (String(w.word).length <= 3 ? 8 : String(w.word).length <= 4 ? 10 : String(w.word).length <= 5 ? 15 : 25)
-        }));
-
-        // Validate grid - ensure no conflicting letters and proper connectivity
-        const validatedWords = [];
-        const occupiedCells = {}; // key: "row,col" -> letter
-
-        // Helper function to get all cells of a word
-        const getWordCells = (word) => {
-            const cells = [];
-            let r = word.row;
-            let c = word.col;
-            const isHoriz = word.direction === 'H';
-            for (let i = 0; i < word.word.length; i++) {
-                cells.push({ row: r, col: c, letter: word.word[i] });
-                if (isHoriz) c++; else r++;
-            }
-            return cells;
-        };
-
-        // Helper function to check if a word intersects with existing cells
-        const hasIntersection = (word) => {
-            const cells = getWordCells(word);
-            for (const cell of cells) {
-                const key = `${cell.row},${cell.col}`;
-                if (occupiedCells[key] && occupiedCells[key] === cell.letter) {
-                    return true; // Found a valid intersection
-                }
-            }
-            return false;
-        };
-
-        // Helper function to check if word has conflicts
-        const hasConflict = (word) => {
-            const cells = getWordCells(word);
-            for (const cell of cells) {
-                const key = `${cell.row},${cell.col}`;
-                if (occupiedCells[key] && occupiedCells[key] !== cell.letter) {
-                    console.log(`[PUZZLE-VALIDATE] Conflict at ${key}: existing=${occupiedCells[key]}, new=${cell.letter} from word ${word.word}`);
-                    return true;
-                }
-            }
-            return false;
-        };
-
-        // Sort words by length (descending) to place longer words first
-        const sortedWords = [...puzzle.words].sort((a, b) => b.word.length - a.word.length);
-
-        for (let i = 0; i < sortedWords.length; i++) {
-            const w = sortedWords[i];
-
-            // Check for conflicts (different letter at same cell)
-            if (hasConflict(w)) {
-                console.log(`[PUZZLE-VALIDATE] Word ${w.word} conflicts with existing words - skipping`);
-                continue;
-            }
-
-            // First word doesn't need intersection, subsequent words must intersect
-            if (validatedWords.length > 0 && !hasIntersection(w)) {
-                console.log(`[PUZZLE-VALIDATE] Word ${w.word} has no intersection with existing grid - skipping`);
-                continue;
-            }
-
-            // Word is valid - add its cells to occupiedCells
-            const cells = getWordCells(w);
-            for (const cell of cells) {
-                const key = `${cell.row},${cell.col}`;
-                occupiedCells[key] = cell.letter;
-            }
-            validatedWords.push(w);
-            console.log(`[PUZZLE-VALIDATE] Added word ${w.word} (${w.direction}) at ${w.row},${w.col}`);
+        if (letters.length < 7 || letters.length > 8) {
+            throw new Error(`Invalid letter pool size: ${letters.length}`);
         }
 
-        console.log(`[PUZZLE-VALIDATE] Valid connected words: ${validatedWords.length}/${puzzle.words.length}`);
+        const availableLetters = letters.reduce((counts, letter) => {
+            counts[letter] = (counts[letter] || 0) + 1;
+            return counts;
+        }, {});
 
-        // If too few words are valid, log a warning
-        if (validatedWords.length < 6) {
-            console.warn(`[PUZZLE-VALIDATE] Warning: Only ${validatedWords.length} valid words. Puzzle quality may be poor.`);
+        const canFormFromLetters = (word) => {
+            const used = {};
+            for (const letter of word) {
+                used[letter] = (used[letter] || 0) + 1;
+                if (used[letter] > (availableLetters[letter] || 0)) return false;
+            }
+            return true;
+        };
+
+        const uniqueWords = new Map();
+        for (const item of Array.isArray(generated.words) ? generated.words : []) {
+            const word = latinize(String(item?.word || '')).toUpperCase().replace(/[^A-Z]/g, '');
+            if (word.length < 3 || word.length > 8 || !canFormFromLetters(word)) continue;
+            if (uniqueWords.has(word)) continue;
+
+            const parsedPoints = typeof item.points === 'number' ? item.points : parseInt(item.points, 10);
+            uniqueWords.set(word, {
+                word,
+                lang: item.lang || 'en',
+                points: parsedPoints || (word.length <= 3 ? 8 : word.length <= 4 ? 10 : word.length <= 5 ? 15 : 25),
+            });
         }
 
-        puzzle.words = validatedWords;
+        const candidates = [...uniqueWords.values()];
+        const puzzle = generateGridFromWords(candidates, letters);
+
+        console.log(`[PUZZLE-VALIDATE] Valid candidates: ${candidates.length}, placed: ${puzzle.words.length}`);
+
+        if (puzzle.words.length < 6) {
+            if (retryCount < 2) {
+                console.warn(`[PUZZLE-VALIDATE] Only ${puzzle.words.length} words placed; regenerating (${retryCount + 1}/2)`);
+                return generateWeeklyPuzzleWords(retryCount + 1);
+            }
+            throw new Error(`Puzzle quality check failed after 3 attempts: only ${puzzle.words.length} words placed`);
+        }
 
         return puzzle;
     } catch (error) {
@@ -974,7 +917,16 @@ async function handleGenerateWordPuzzle(req, res) {
         const cacheDoc = await cacheRef.get();
 
         if (cacheDoc.exists) {
-            return res.status(200).json({ success: true, status: 'already_cached', date: dateStr });
+            const cachedWordCount = cacheDoc.data().words?.length || 0;
+            if (cachedWordCount >= 6) {
+                return res.status(200).json({
+                    success: true,
+                    status: 'already_cached',
+                    date: dateStr,
+                    wordCount: cachedWordCount,
+                });
+            }
+            console.warn(`[WEEKLY-GENERATE] Replacing low-quality cache for ${dateStr}: ${cachedWordCount} words`);
         }
 
         const puzzle = await generateWeeklyPuzzleWords();
@@ -1686,4 +1638,5 @@ module.exports = {
     handleCuratedWords,
     handleWeeklyAwardWinner,
     handleClearWeeklyReward,
+    generateGridFromWords,
 };

@@ -43,8 +43,10 @@ const THEMES = [
     'Science & Innovation',
 ];
 
-function getTodayTheme() {
-    const now = new Date();
+function getTodayTheme(targetDateStr = null) {
+    const now = targetDateStr
+        ? new Date(`${targetDateStr}T00:00:00.000Z`)
+        : new Date();
     // Use UTC date for consistency
     const startOfYear = Date.UTC(now.getUTCFullYear(), 0, 0);
     const nowUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
@@ -259,9 +261,7 @@ JSON format (return ONLY valid JSON, no explanation):
 async function getTodayUniversalWordPool(targetDateStr = null) {
     const db = admin.firestore();
     const today = targetDateStr || new Date().toISOString().split('T')[0];
-    const theme = getTodayTheme(); // Note: This uses new Date() internally, might need adjustment for future dates if theme depends on date.
-    // Ideally getTodayTheme should also accept a date. But for now let's assume theme rotation is fine or fix it.
-    // getTodayTheme uses new Date(). Let's fix that too if possible, but for now let's just pass the date.
+    const theme = getTodayTheme(today);
 
     try {
         const cacheRef = db.collection('dailyChallengeCache').doc(`universal_${today}`);
@@ -290,7 +290,7 @@ async function getTodayUniversalWordPool(targetDateStr = null) {
 async function handleGenerateDailyChallenge(req, res) {
     try {
         const webhookSecret = req.headers['x-webhook-secret'] || req.headers['x-client-secret'];
-        if (webhookSecret !== process.env.N8N_WEBHOOK_SECRET && webhookSecret !== process.env.APP_CLIENT_SECRET) {
+        if (!process.env.N8N_WEBHOOK_SECRET || webhookSecret !== process.env.N8N_WEBHOOK_SECRET) {
             return res.status(401).json({ success: false, error: 'Unauthorized' });
         }
 
@@ -307,8 +307,6 @@ async function handleGenerateDailyChallenge(req, res) {
             return res.status(200).json({ success: true, status: 'already_cached', date: dateStr });
         }
 
-        // We need to pass the date to getTodayUniversalWordPool, but we also need to ensure the theme is correct for that date.
-        // For now, we'll just generate it.
         const words = await getTodayUniversalWordPool(dateStr);
 
         return res.status(200).json({
@@ -563,20 +561,38 @@ async function handleSubmitScore(req, res) {
 async function handleDailyChallengeReminder(req, res) {
     try {
         const webhookSecret = req.headers['x-webhook-secret'] || req.headers['x-client-secret'];
-        if (webhookSecret !== process.env.N8N_WEBHOOK_SECRET && webhookSecret !== process.env.APP_CLIENT_SECRET) {
+        if (!process.env.N8N_WEBHOOK_SECRET || webhookSecret !== process.env.N8N_WEBHOOK_SECRET) {
             return res.status(401).json({ success: false, error: 'Unauthorized' });
         }
 
         const reminderType = req.query.type || req.body?.type || 'challenge'; // 'challenge' or 'streak'
+        const dryRun = String(req.query.dryRun || req.body?.dryRun || 'false') === 'true';
+        const requestedLimit = parseInt(req.query.limit || req.body?.limit || '500', 10);
+        const userLimit = Math.min(Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 500, 1), 500);
         const db = admin.firestore();
         const today = new Date().toISOString().split('T')[0];
-        const results = { sent: 0, skipped: 0, failed: 0, noToken: 0 };
+        const results = { sent: 0, skipped: 0, failed: 0, noToken: 0, invalidTokensRemoved: 0, dryRun };
+
+        const handleMessagingError = async (error, userRef) => {
+            const invalidTokenCodes = new Set([
+                'messaging/registration-token-not-registered',
+                'messaging/invalid-registration-token',
+            ]);
+
+            if (!dryRun && invalidTokenCodes.has(error.code)) {
+                await userRef.update({
+                    fcmToken: FieldValue.delete(),
+                    fcmTokenUpdatedAt: FieldValue.delete(),
+                });
+                results.invalidTokensRemoved++;
+            }
+        };
 
         if (reminderType === 'streak') {
             // STREAK REMINDER: Notify users with active streaks who haven't practiced today
             const usersQuery = await db.collection('users')
                 .where('currentStreak', '>', 0)
-                .limit(500)
+                .limit(userLimit)
                 .get();
 
             for (const doc of usersQuery.docs) {
@@ -593,11 +609,16 @@ async function handleDailyChallengeReminder(req, res) {
                             title: '🔥 Keep Your Streak!',
                             body: `You have a ${user.currentStreak}-day streak! Don't lose it today!`
                         },
+                        data: {
+                            action: 'streak_reminder',
+                            type: 'streak_reminder',
+                        },
                         token: user.fcmToken,
-                    });
+                    }, dryRun);
                     results.sent++;
                 } catch (error) {
                     results.failed++;
+                    await handleMessagingError(error, doc.ref);
                 }
             }
         } else {
@@ -608,7 +629,7 @@ async function handleDailyChallengeReminder(req, res) {
                 .get();
 
             const completedUserIds = new Set(completionsQuery.docs.map(d => d.data().userId));
-            const usersQuery = await db.collection('users').limit(500).get();
+            const usersQuery = await db.collection('users').limit(userLimit).get();
 
             for (const doc of usersQuery.docs) {
                 const user = doc.data();
@@ -621,11 +642,16 @@ async function handleDailyChallengeReminder(req, res) {
                             title: '🎮 Daily Challenge Ready!',
                             body: 'Your daily word match game is waiting for you!'
                         },
+                        data: {
+                            action: 'daily_challenge',
+                            type: 'daily_challenge',
+                        },
                         token: user.fcmToken,
-                    });
+                    }, dryRun);
                     results.sent++;
                 } catch (error) {
                     results.failed++;
+                    await handleMessagingError(error, doc.ref);
                 }
             }
         }

@@ -1,5 +1,6 @@
 const functions = require('firebase-functions');
-const admin = require('firebase-admin');
+const { initializeFirebase } = require('../utils/firebaseInit');
+const admin = initializeFirebase();
 
 // Mock names for filling leagues with fake users
 const MOCK_NAMES = [
@@ -140,24 +141,20 @@ async function handleGetLeague(req, res) {
             return res.status(500).json({ success: false, error: 'Failed to get cluster' });
         }
 
-        // Update user's current score and profile in cluster if changed
+        // Update user's current score in cluster if changed
+        // Note: getUserCluster already fetches fresh usernames for all real users
         const userInCluster = cluster.users.find(u => u.userId === userId);
         if (userInCluster) {
             const needsScoreUpdate = userInCluster.weeklyScore !== userWeeklyScore;
-            const needsProfileUpdate = userInCluster.displayName !== displayName || userInCluster.avatar !== avatar;
 
-            if (needsScoreUpdate || needsProfileUpdate) {
-                // Update in database
+            if (needsScoreUpdate) {
+                // Update score in database
                 await clusterService.updateUserInCluster(userId, {
                     weeklyScore: userWeeklyScore,
-                    displayName: displayName,
-                    avatar: avatar,
                 });
 
                 // Update local data
                 userInCluster.weeklyScore = userWeeklyScore;
-                userInCluster.displayName = displayName;
-                userInCluster.avatar = avatar;
 
                 // Re-sort after score update
                 cluster.users.sort((a, b) => b.weeklyScore - a.weeklyScore);

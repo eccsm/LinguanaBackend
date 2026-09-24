@@ -92,7 +92,7 @@ function generateMockUsers(count, tier) {
             avatar: randomAvatar,
             weeklyScore: score,
             isRealUser: false,
-            joinedAt: admin.firestore.FieldValue.serverTimestamp(),
+            joinedAt: new Date(),
         });
     }
 
@@ -161,7 +161,7 @@ async function assignUserToCluster(userId, displayName, avatar, tier) {
                     avatar: avatar || null,
                     weeklyScore: 0,
                     isRealUser: true,
-                    joinedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    joinedAt: new Date(),
                 };
             } else {
                 // No mock to replace, just add
@@ -171,7 +171,7 @@ async function assignUserToCluster(userId, displayName, avatar, tier) {
                     avatar: avatar || null,
                     weeklyScore: 0,
                     isRealUser: true,
-                    joinedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    joinedAt: new Date(),
                 });
             }
 
@@ -194,7 +194,7 @@ async function assignUserToCluster(userId, displayName, avatar, tier) {
             avatar: avatar || null,
             weeklyScore: 0,
             isRealUser: true,
-            joinedAt: admin.firestore.FieldValue.serverTimestamp(),
+            joinedAt: new Date(),
         };
 
         // Generate mocks to fill cluster
@@ -315,6 +315,7 @@ async function updateUserInCluster(userId, updates) {
 
 /**
  * Get user's cluster with current standings
+ * Fetches fresh username/avatar from users collection for all real users
  */
 async function getUserCluster(userId, displayName, avatar, userTotalXP) {
     const db = admin.firestore();
@@ -334,6 +335,35 @@ async function getUserCluster(userId, displayName, avatar, userTotalXP) {
 
     const clusterData = clusterDoc.data();
     let users = clusterData.users || [];
+
+    // Fetch fresh user data from users collection for all real users
+    // This ensures we display the current username, not the stale one from cluster creation time
+    const realUserIds = users.filter(u => u.isRealUser).map(u => u.userId);
+    if (realUserIds.length > 0) {
+        const userDocs = await Promise.all(
+            realUserIds.map(uid => db.collection('users').doc(uid).get())
+        );
+        const userDataMap = {};
+        userDocs.forEach(doc => {
+            if (doc.exists) {
+                userDataMap[doc.id] = doc.data();
+            }
+        });
+
+        // Update users array with fresh usernames and avatars
+        users = users.map(user => {
+            if (user.isRealUser && userDataMap[user.userId]) {
+                const freshData = userDataMap[user.userId];
+                return {
+                    ...user,
+                    // Use current username from users collection, prefer username over displayName
+                    displayName: freshData.username || freshData.displayName || user.displayName,
+                    avatar: freshData.equippedAvatar || freshData.avatar || user.avatar,
+                };
+            }
+            return user;
+        });
+    }
 
     // Sort by score descending
     users.sort((a, b) => b.weeklyScore - a.weeklyScore);

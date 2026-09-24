@@ -4,7 +4,8 @@
  * Handles word management for the Speed Swipe game.
  * Daily rotation: n8n pushes 100 random word pairs, clears old data first.
  */
-const admin = require('firebase-admin');
+const { initializeFirebase } = require('../utils/firebaseInit');
+const admin = initializeFirebase();
 const functions = require('firebase-functions');
 
 // Helper to verify n8n webhook secret
