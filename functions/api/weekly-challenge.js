@@ -172,6 +172,72 @@ async function handleWeeklySubmitWord(req, res) {
     }
 }
 
+// Short language codes -> full names (meaning objects are keyed by full name)
+const LANG_CODE_TO_NAME = {
+    'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
+    'it': 'Italian', 'pt': 'Portuguese', 'tr': 'Turkish', 'ru': 'Russian',
+    'ar': 'Arabic', 'hi': 'Hindi', 'zh': 'Chinese', 'ja': 'Japanese', 'ko': 'Korean'
+};
+
+/**
+ * Normalizes a word's meaning into { [languageName]: text }.
+ * Accepts objects keyed by full name or short code, or a plain string (treated as English).
+ */
+function normalizeMeaning(meaning) {
+    if (!meaning) return null;
+    if (typeof meaning === 'string') {
+        const text = meaning.trim();
+        return text ? { English: text } : null;
+    }
+    if (typeof meaning !== 'object') return null;
+
+    const normalized = {};
+    for (const [key, value] of Object.entries(meaning)) {
+        if (typeof value !== 'string' || !value.trim()) continue;
+        normalized[LANG_CODE_TO_NAME[key] || key] = value.trim();
+    }
+    return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+/**
+ * Generates a short clue-style meaning for a puzzle word in the requested language.
+ * Used by tips when the cached puzzle has no meaning for the user's native language.
+ */
+async function generateWordMeaning(word, wordLanguageName, targetLanguageName) {
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing');
+
+    const prompt = `The ${wordLanguageName} word "${word}" (written without accents) is a hidden answer in a word puzzle.
+Write a short clue in ${targetLanguageName} (max 6 words) that gives its meaning or translation.
+The clue must NOT contain the word "${word}" itself.
+Return JSON ONLY: {"meaning": "..."}`;
+
+    const response = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+            model: 'gpt-4o-mini',
+            messages: [
+                { role: 'system', content: 'You write short word-puzzle clues. Return ONLY valid JSON.' },
+                { role: 'user', content: prompt }
+            ],
+            response_format: { type: 'json_object' },
+            temperature: 0.2,
+            max_tokens: 100,
+        },
+        {
+            headers: {
+                'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+            timeout: 15000,
+        }
+    );
+
+    const parsed = JSON.parse(response.data.choices[0].message.content.trim());
+    const meaning = typeof parsed.meaning === 'string' ? parsed.meaning.trim() : '';
+    return meaning || null;
+}
+
 async function generateWeeklyPuzzleWords(retryCount = 0) {
     try {
         const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -187,15 +253,16 @@ Requirements:
 4. The words can be from ANY of these languages: English, Spanish, French, German, Italian, Portuguese, Turkish. Mix them up!
 5. Words must be 3-8 letters long and use Latin letters only.
 6. No slang, no offensive words.
+7. For every word, add a short English meaning (max 6 words) in "meaning.English". It is shown as a clue, so it must NOT contain the word itself.
 
 Return JSON format ONLY:
 {
   "letters": ["O", "R", "A", "T", "I", "O", "N"],
   "words": [
-    {"word": "RATION", "lang": "en", "points": 25},
-    {"word": "RAIN", "lang": "en", "points": 10},
-    {"word": "RIOT", "lang": "en", "points": 10},
-    {"word": "ART", "lang": "en", "points": 8}
+    {"word": "RATION", "lang": "en", "points": 25, "meaning": {"English": "a fixed allowance of food"}},
+    {"word": "RAIN", "lang": "en", "points": 10, "meaning": {"English": "water falling from clouds"}},
+    {"word": "RIOT", "lang": "en", "points": 10, "meaning": {"English": "a violent public disturbance"}},
+    {"word": "ART", "lang": "en", "points": 8, "meaning": {"English": "creative visual expression"}}
   ]
 }
 The backend will calculate all crossword coordinates. Do not include row, col, or direction.`;
@@ -210,7 +277,7 @@ The backend will calculate all crossword coordinates. Do not include row, col, o
                 ],
                 response_format: { type: 'json_object' },
                 temperature: 0.4,
-                max_tokens: 2000,
+                max_tokens: 3000,
             },
             {
                 headers: {
@@ -258,6 +325,7 @@ The backend will calculate all crossword coordinates. Do not include row, col, o
             uniqueWords.set(word, {
                 word,
                 lang: item.lang || 'en',
+                meaning: normalizeMeaning(item.meaning),
                 points: parsedPoints || (word.length <= 3 ? 8 : word.length <= 4 ? 10 : word.length <= 5 ? 15 : 25),
             });
         }
@@ -634,94 +702,78 @@ async function handleWeeklyTip(req, res) {
         }
 
         // Get puzzle and user progress
-        const puzzleDoc = await db.collection('weeklyPuzzleCache').doc(puzzleDate).get();
+        const puzzleRef = db.collection('weeklyPuzzleCache').doc(puzzleDate);
+        const puzzleDoc = await puzzleRef.get();
         const progressDoc = await db.collection('weeklyPuzzleScores').doc(`${puzzleDate}_${userId}`).get();
 
         if (!puzzleDoc.exists) return res.status(404).json({ success: false, error: 'Puzzle not found' });
 
         const puzzle = puzzleDoc.data();
         const progress = progressDoc.exists ? progressDoc.data() : { foundWords: [], tipsUsed: [] };
+        const puzzleWords = Array.isArray(puzzle.words) ? puzzle.words : [];
 
-        // Debug logging
-        console.log(`[WEEKLY-TIP] PuzzleDate: ${puzzleDate}, UserId: ${userId}`);
-        console.log(`[WEEKLY-TIP] Puzzle has ${puzzle.words?.length || 0} words`);
-        console.log(`[WEEKLY-TIP] Progress - foundWords: ${JSON.stringify(progress.foundWords || [])}, tipsUsed: ${JSON.stringify(progress.tipsUsed || [])}`);
-        console.log(`[WEEKLY-TIP] Words with meaning:`, puzzle.words?.map(w => ({
-            word: w.word,
-            hasMeaning: !!w.meaning,
-            meaningType: typeof w.meaning
-        })));
+        // User's native language (stored as a short code, default English)
+        const nativeLangName = LANG_CODE_TO_NAME[user.nativeLanguage] || 'English';
 
-        // Get user's native language (default to English)
-        const nativeLanguage = user.nativeLanguage || 'en';
-
-        // Map short codes to full language names for the meaning object
-        const langCodeToName = {
-            'en': 'English',
-            'es': 'Spanish',
-            'fr': 'French',
-            'de': 'German',
-            'it': 'Italian',
-            'pt': 'Portuguese',
-            'tr': 'Turkish',
-            'ru': 'Russian',
-            'ar': 'Arabic',
-            'hi': 'Hindi',
-            'zh': 'Chinese',
-            'ja': 'Japanese',
-            'ko': 'Korean',
-        };
-
-        const nativeLangName = langCodeToName[nativeLanguage] || 'English';
-
-        // Find unfound words that:
-        // 1. Haven't been found yet
-        // 2. Haven't had tips used on them
-        // 3. Have meaning data
+        // Find words that haven't been found yet and haven't had a tip used on them.
+        // Meaning data is NOT required here: puzzles generated by the scheduled job have
+        // no (or only English) meanings, so missing translations are generated on demand below.
         const tipsUsed = progress.tipsUsed || [];
         const foundWords = progress.foundWords || [];
 
-        const eligibleWords = puzzle.words.filter(w =>
+        const eligibleWords = puzzleWords.filter(w =>
+            w && w.word &&
             !foundWords.includes(w.word) &&
-            !tipsUsed.includes(w.word) &&
-            w.meaning && typeof w.meaning === 'object'
+            !tipsUsed.includes(w.word)
         );
 
-        // Debug: log why words failed eligibility
-        console.log(`[WEEKLY-TIP] Eligible words: ${eligibleWords.length}/${puzzle.words.length}`);
-        puzzle.words.forEach(w => {
-            const inFound = foundWords.includes(w.word);
-            const inTips = tipsUsed.includes(w.word);
-            const hasMeaning = w.meaning && typeof w.meaning === 'object';
-            if (inFound || inTips || !hasMeaning) {
-                console.log(`[WEEKLY-TIP] Word ${w.word} excluded: found=${inFound}, tipsUsed=${inTips}, hasMeaning=${hasMeaning}`);
-            }
-        });
+        console.log(`[WEEKLY-TIP] PuzzleDate: ${puzzleDate}, UserId: ${userId}, eligible: ${eligibleWords.length}/${puzzleWords.length}`);
 
         if (eligibleWords.length === 0) {
             return res.status(400).json({
                 success: false,
-                error: 'No tips available',
-                message: 'All words have tips used or no meaning data'
+                error: 'No tips available for this puzzle',
             });
         }
 
-        // Pick a random word to give tip for
-        const tipWord = eligibleWords[Math.floor(Math.random() * eligibleWords.length)];
+        // Prefer words that already have a meaning in the user's language (no AI call needed)
+        const withNativeMeaning = eligibleWords.filter(w => normalizeMeaning(w.meaning)?.[nativeLangName]);
+        const pool = withNativeMeaning.length > 0 ? withNativeMeaning : eligibleWords;
+        const tipWord = pool[Math.floor(Math.random() * pool.length)];
+        const wordLanguageName = LANG_CODE_TO_NAME[tipWord.lang] || tipWord.lang || 'Unknown';
 
-        // Get meaning in user's native language
-        let meaningText = tipWord.meaning[nativeLangName] || tipWord.meaning['English'] || null;
+        const existingMeaning = normalizeMeaning(tipWord.meaning) || {};
+        let meaningText = existingMeaning[nativeLangName] || null;
 
-        // If still no meaning, try first available translation
         if (!meaningText) {
-            const availableKeys = Object.keys(tipWord.meaning);
-            if (availableKeys.length > 0) {
-                meaningText = tipWord.meaning[availableKeys[0]];
+            try {
+                meaningText = await generateWordMeaning(tipWord.word, wordLanguageName, nativeLangName);
+            } catch (genError) {
+                console.error(`[WEEKLY-TIP] Meaning generation failed for ${tipWord.word}:`, genError.message);
+            }
+
+            if (meaningText) {
+                // Cache the generated meaning on the puzzle so other players reuse it
+                const generatedMeaning = meaningText;
+                await db.runTransaction(async (t) => {
+                    const snap = await t.get(puzzleRef);
+                    const words = snap.data()?.words;
+                    if (!Array.isArray(words)) return;
+                    t.update(puzzleRef, {
+                        words: words.map(w => w.word === tipWord.word
+                            ? { ...w, meaning: { ...(normalizeMeaning(w.meaning) || {}), [nativeLangName]: generatedMeaning } }
+                            : w
+                        ),
+                    });
+                }).catch(err => console.error('[WEEKLY-TIP] Failed to cache meaning:', err.message));
+            } else {
+                // Fall back to any stored translation (English first)
+                meaningText = existingMeaning['English'] || Object.values(existingMeaning)[0] || null;
             }
         }
 
         if (!meaningText) {
-            return res.status(400).json({ success: false, error: 'Meaning not available for this word' });
+            return res.status(503).json({ success: false, error: 'Tip is temporarily unavailable. Please try again.' });
         }
 
         // Deduct XP only if not paid by ad
@@ -738,19 +790,11 @@ async function handleWeeklyTip(req, res) {
         await progressRef.set({
             puzzleDate,
             userId,
-            tipsUsed: [...tipsUsed, tipWord.word],
+            tipsUsed: FieldValue.arrayUnion(tipWord.word),
             startedAt: progress.startedAt || FieldValue.serverTimestamp(),
         }, { merge: true });
 
         console.log(`[WEEKLY-TIP] User ${userId} got tip for word in ${tipWord.lang}: "${meaningText}" (native: ${nativeLangName})`);
-
-        // Map short lang codes to full names (some puzzles have codes, some have names)
-        const langCodeToFullName = {
-            'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
-            'it': 'Italian', 'pt': 'Portuguese', 'tr': 'Turkish', 'ru': 'Russian',
-            'ar': 'Arabic', 'hi': 'Hindi', 'zh': 'Chinese', 'ja': 'Japanese', 'ko': 'Korean'
-        };
-        const wordLanguageName = langCodeToFullName[tipWord.lang] || tipWord.lang || 'Unknown';
 
         return res.status(200).json({
             success: true,
