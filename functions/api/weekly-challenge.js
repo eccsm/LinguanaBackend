@@ -39,6 +39,9 @@ function getCurrentWeekId() {
 
 function latinize(text) {
     return text
+        // Turkish dotless i does not decompose under Unicode NFD.
+        .replace(/ı/g, 'i')
+        .replace(/İ/g, 'I')
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
         .replace(/[^a-zA-Z]/g, '')
